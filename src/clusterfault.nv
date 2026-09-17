@@ -1,0 +1,99 @@
+// clusterfault.nv — the one thing that can go wrong, and the eleven
+// ways it does.
+//
+// WHY EVERY ONE OF THEM IS ABOUT THE CALL.  Clustering cannot fail the
+// way a parse can: there is no such thing as data that is not
+// clusterable.  What can be wrong is the CALL — a matrix that is not a
+// matrix, a `k` larger than the number of points to divide, a
+// neighbourhood radius of zero, a list of random draws that is the
+// wrong length or holds a number outside the unit interval.  Every one
+// of those is findable before the first distance is computed, and
+// every one of them names a specific argument.
+//
+// The one exception is `ClusterArrayFault`, which carries an
+// `NdFault` from ndarray-nv unchanged.  A reshape or a slice this
+// package performs on the caller's data can fail, and rewriting that
+// failure into a sentence of our own would lose the shapes ndarray-nv
+// already put in it.  Passing it through is what lets a caller match
+// on the original.
+//
+// WHY THE VARIANT NAMES ARE ALL Cluster-PREFIXED.  An enum variant is
+// constructed by its bare name across the whole assembly, so
+// `EmptyData` declared here would bind every `EmptyData` in any
+// program that also depends on a package that declared one.
+
+// What a clustering call could not do.
+//
+// ```novo
+// use clusterfault
+//
+// fn main() [io]
+//     let e = ClusterBadK(5, 3)
+//     println(e.message())
+// ```
+pub enum ClusterFault
+    // The data array is not rank 2.  This package's data is always
+    // `[n_samples, n_features]`, and a rank-1 array of measurements
+    // has to be reshaped to `[n, 1]` by the caller — because only the
+    // caller knows whether it is one feature of many samples or many
+    // features of one.
+    ClusterNotMatrix(rank: Int)
+    // The data has no rows, so there is nothing to cluster.
+    ClusterEmptyData
+    // `k` is below 1, or above the number of samples.  Carries both,
+    // because "3 clusters from 2 points" is the message that explains
+    // itself.
+    ClusterBadK(k: Int, samples: Int)
+    // The list of uniform draws is the wrong length for the `k` asked
+    // for.  `clusterkmeans.uniforms_needed` is the function that
+    // answers the right one.
+    ClusterUniformCountWrong(given: Int, needed: Int)
+    // A uniform draw is outside `[0, 1)`.  Carries which one and what
+    // it was, because the usual cause is a generator handing back a
+    // raw integer or a closed interval.
+    ClusterUniformOutOfRange(index: Int, value: Float)
+    // The initial centroids are not `[k, n_features]`.  Carries the
+    // shape wanted and the shape given.
+    ClusterCentroidShapeWrong(want_rows: Int, want_cols: Int, got_rows: Int, got_cols: Int)
+    // DBSCAN's neighbourhood radius is not positive.  A radius of zero
+    // makes every point its own neighbourhood and every point noise,
+    // which is an answer nobody wants and a mistake everybody makes
+    // once.
+    ClusterBadEpsilon(value: Float)
+    // DBSCAN's `min_points` is below 1.
+    ClusterBadMinPoints(value: Int)
+    // An iteration budget is not positive.  A budget of zero runs no
+    // iterations and returns the seeding unchanged, which is a result
+    // that looks like a fit and is not one.
+    ClusterBadBudget(value: Int)
+    // This algorithm is not defined for this metric.  `algorithm` and
+    // `metric` are both named, because the fix is to change one of
+    // them and the reader has to know which two are in play.  k-means
+    // is the case: its update step is the mean, and the mean minimises
+    // the squared Euclidean distance and nothing else.
+    ClusterMetricUnsupported(algorithm: Str, metric: Str)
+    // A dendrogram cut names no partition: a cluster count below 1 or
+    // above the sample count, or a negative distance threshold.
+    ClusterBadCut(what: Str)
+    // A sample or a cluster index is off the end of what it indexes.
+    // Carries the index and the count.
+    ClusterIndexOutOfRange(index: Int, count: Int)
+    // An array operation on the caller's data failed.  Carries
+    // ndarray-nv's own fault unchanged, so the shapes it compared are
+    // still in the message and a caller can still match on it.
+    ClusterArrayFault(inner: NdFault)
+
+// `ClusterFault` is an `Error`, which is what lets
+// `Result<T, ClusterFault>` exist at all (SPEC § 3.4).
+impl Error for ClusterFault
+    // The one-line message: which argument was wrong, and the numbers
+    // that make it wrong.
+    //
+    // Every variant prints both sides of whatever it compared, so a
+    // reader never has to go back to the call to find out what the
+    // other side was.  `ClusterArrayFault` delegates to the
+    // `NdFault` it carries.
+    //
+    // Panics with `not implemented` until the bodies land.
+    fn message(self) -> Str
+        todo("cluster-nv.ClusterFault.message")

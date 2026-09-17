@@ -1,0 +1,177 @@
+// clusteragglomerative_tests.nv — the tree is built once and cut many
+// times.
+//
+// RED ON PURPOSE: every assertion reaches `not implemented:
+// cluster-nv.clusteragglomerative.<fn>`.
+//
+// The fixture is the same four points on a line — 0, 1, 10, 11 — and
+// its whole merge history can be written down.  Under average linkage
+// the first two merges are {0,1} at distance 1 and {2,3} at distance
+// 1, and the last joins them at distance 10: the mean of the four
+// cross distances 10, 11, 9, 10.  Every number asserted below is that
+// arithmetic.
+
+use std.test
+use clusteragglomerative
+use clusterlabels
+use ndfloat
+
+fn four_points() -> NdFloat
+    match ndfloat.of_list([0.0, 1.0, 10.0, 11.0], [4, 1])
+        Ok(a)  => a
+        Err(_) => ndfloat.scalar(0.0)
+
+fn tree() -> ClusterDendrogram
+    match clusteragglomerative.build(four_points(), ClusterAverage, ClusterEuclidean)
+        Ok(d)  => d
+        Err(_) => ClusterDendrogram { merges: [], sample_count: 0 }
+
+@test
+fn test_a_linkage_round_trips_through_its_name() [io]
+    // The three give genuinely different trees on the same data, so
+    // quietly choosing one is quietly choosing an answer.
+    test.case("the three names")
+    test.assert_eq_str(clusteragglomerative.linkage_name(ClusterSingle), "single")
+    test.assert_eq_str(clusteragglomerative.linkage_name(ClusterComplete), "complete")
+    test.assert_eq_str(clusteragglomerative.linkage_name(ClusterAverage), "average")
+
+    test.case("and each reads back")
+    match clusteragglomerative.linkage_named("complete")
+        None    => test.fail("complete is one of the three")
+        Some(l) => test.assert_eq_str(clusteragglomerative.linkage_name(l), "complete")
+
+    test.case("a spelling this package does not use is None")
+    test.assert_none(clusteragglomerative.linkage_named("ward"))
+
+@test
+fn test_the_tree_has_one_merge_fewer_than_it_has_samples() [io]
+    test.case("four samples, three merges")
+    match clusteragglomerative.build(four_points(), ClusterAverage, ClusterEuclidean)
+        Err(e) => test.fail(e.message())
+        Ok(d)  =>
+            test.assert(d.sample_count == 4)
+            test.assert(list.len(d.merges) == 3)
+
+    test.case("the first merge joins two leaves a unit apart")
+    match clusteragglomerative.build(four_points(), ClusterAverage, ClusterEuclidean)
+        Err(e) => test.fail(e.message())
+        Ok(d)  =>
+            test.assert_approx(d.merges[0].distance, 1.0, 0.0000001)
+            test.assert(d.merges[0].size == 2)
+
+    test.case("the last joins the two pairs at the mean of the four cross distances, which is 10")
+    match clusteragglomerative.build(four_points(), ClusterAverage, ClusterEuclidean)
+        Err(e) => test.fail(e.message())
+        Ok(d)  =>
+            test.assert_approx(d.merges[2].distance, 10.0, 0.0000001)
+            test.assert(d.merges[2].size == 4)
+
+    test.case("a merge names the lower-numbered cluster first, so the tree is deterministic")
+    match clusteragglomerative.build(four_points(), ClusterAverage, ClusterEuclidean)
+        Err(e) => test.fail(e.message())
+        Ok(d)  => test.assert(d.merges[0].left < d.merges[0].right)
+
+@test
+fn test_the_three_linkages_disagree_about_the_last_merge() [io]
+    // Single takes the smallest cross distance, complete the largest,
+    // average the mean — 9, 11 and 10 on this fixture.  If they agreed
+    // there would be no reason for three of them.
+    test.case("single: the nearest pair across the gap, 10 to 1")
+    match clusteragglomerative.build(four_points(), ClusterSingle, ClusterEuclidean)
+        Err(e) => test.fail(e.message())
+        Ok(d)  => test.assert_approx(d.merges[2].distance, 9.0, 0.0000001)
+
+    test.case("complete: the furthest pair, 11 to 0")
+    match clusteragglomerative.build(four_points(), ClusterComplete, ClusterEuclidean)
+        Err(e) => test.fail(e.message())
+        Ok(d)  => test.assert_approx(d.merges[2].distance, 11.0, 0.0000001)
+
+    test.case("average: the mean of all four")
+    match clusteragglomerative.build(four_points(), ClusterAverage, ClusterEuclidean)
+        Err(e) => test.fail(e.message())
+        Ok(d)  => test.assert_approx(d.merges[2].distance, 10.0, 0.0000001)
+
+@test
+fn test_cutting_at_a_count_undoes_the_last_merges() [io]
+    test.case("two clusters is the two pairs")
+    match clusteragglomerative.cut_at_count(tree(), 2)
+        Err(e) => test.fail(e.message())
+        Ok(l)  =>
+            test.assert(clusterlabels.labels_of(l) == [0, 0, 1, 1])
+            test.assert(clusterlabels.noise_count(l) == 0)
+
+    test.case("one cluster is everything")
+    match clusteragglomerative.cut_at_count(tree(), 1)
+        Err(e) => test.fail(e.message())
+        Ok(l)  => test.assert(clusterlabels.cluster_count(l) == 1)
+
+    test.case("four clusters is every sample on its own")
+    match clusteragglomerative.cut_at_count(tree(), 4)
+        Err(e) => test.fail(e.message())
+        Ok(l)  => test.assert(clusterlabels.sizes(l) == [1, 1, 1, 1])
+
+    test.case("a count of zero and a count above the sample count name no partition")
+    match clusteragglomerative.cut_at_count(tree(), 0)
+        Ok(_)  => test.fail("zero clusters is not a partition")
+        Err(_) => test.assert(true)
+    match clusteragglomerative.cut_at_count(tree(), 5)
+        Ok(_)  => test.fail("five clusters from four samples")
+        Err(_) => test.assert(true)
+
+@test
+fn test_cutting_at_a_distance_lets_the_data_choose_the_count() [io]
+    // The cut to use when a meaningful distance is known and the
+    // number of clusters is not.  It is also what makes building the
+    // tree worth it: the same tree answers at every threshold.
+    test.case("below the last merge's height, the two pairs survive")
+    match clusteragglomerative.cut_at_distance(tree(), 5.0)
+        Err(e) => test.fail(e.message())
+        Ok(l)  => test.assert(clusterlabels.cluster_count(l) == 2)
+
+    test.case("above it, everything is one cluster")
+    match clusteragglomerative.cut_at_distance(tree(), 20.0)
+        Err(e) => test.fail(e.message())
+        Ok(l)  => test.assert(clusterlabels.cluster_count(l) == 1)
+
+    test.case("below the first merge's height, nothing has merged")
+    match clusteragglomerative.cut_at_distance(tree(), 0.5)
+        Err(e) => test.fail(e.message())
+        Ok(l)  => test.assert(clusterlabels.cluster_count(l) == 4)
+
+    test.case("a negative threshold is not a distance")
+    match clusteragglomerative.cut_at_distance(tree(), -1.0)
+        Ok(_)  => test.fail("no two points are a negative distance apart")
+        Err(_) => test.assert(true)
+
+@test
+fn test_the_heights_are_the_dendrograms_y_axis_as_numbers() [io]
+    test.case("one height per merge, non-decreasing")
+    let h = clusteragglomerative.merge_heights(tree())
+    test.assert(list.len(h) == 3)
+    test.assert(h[0] <= h[1])
+    test.assert(h[1] <= h[2])
+
+    test.case("and the largest gap is between the pair merges and the last one, which is where to cut")
+    test.assert_approx(h[2] - h[1], 9.0, 0.0000001)
+
+@test
+fn test_the_state_at_a_named_step_is_what_a_cut_is_written_in_terms_of() [io]
+    test.case("step 0 is every sample its own cluster")
+    match clusteragglomerative.labels_at_step(tree(), 0)
+        Err(e) => test.fail(e.message())
+        Ok(l)  => test.assert(clusterlabels.cluster_count(l) == 4)
+
+    test.case("step 2 is the two pairs, which is the same as cutting at a count of 2")
+    match clusteragglomerative.labels_at_step(tree(), 2)
+        Err(e) => test.fail(e.message())
+        Ok(l)  => test.assert(clusterlabels.labels_of(l) == [0, 0, 1, 1])
+
+    test.case("the last step is one cluster")
+    match clusteragglomerative.labels_at_step(tree(), 3)
+        Err(e) => test.fail(e.message())
+        Ok(l)  => test.assert(clusterlabels.cluster_count(l) == 1)
+
+    test.case("and a step past the end is refused")
+    match clusteragglomerative.labels_at_step(tree(), 4)
+        Ok(_)  => test.fail("there are only three merges to be at")
+        Err(_) => test.assert(true)

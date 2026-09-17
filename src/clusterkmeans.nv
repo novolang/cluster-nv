@@ -1,0 +1,289 @@
+// clusterkmeans.nv — k-means, and the random draws that arrive from
+// outside.
+//
+// WHAT K-MEANS IS.  Choose `k` starting points, called CENTROIDS.
+// Assign every sample to the nearest centroid.  Move each centroid to
+// the mean of the samples assigned to it.  Repeat until nothing moves.
+// The quantity it is minimising is the INERTIA — the sum, over every
+// sample, of the squared distance from that sample to its centroid —
+// and the two steps each decrease it, which is why the iteration
+// converges.
+//
+// THE RANDOMNESS ARRIVES AS AN ARGUMENT.  This is the decision the
+// rest of the module follows from.  k-means has to start somewhere,
+// and the standard start — k-means++ — draws its centroids at random,
+// each one with a probability proportional to its squared distance
+// from the nearest centroid already chosen.  A `core` package may not
+// draw a random number: `[rand]` is a host effect.
+//
+// So the draws are an argument.  `seed_plus_plus` takes a list of
+// uniform numbers in `[0, 1)`, one per centroid it has to choose, and
+// `uniforms_needed` says how many that is.  The caller draws them from
+// whatever generator it already has and hands them over.
+//
+// That is not a workaround, and it buys three things the usual design
+// cannot.  A run is REPRODUCIBLE: the same data and the same draws
+// give the same clustering, every time, on every machine, with no
+// seed-setting ritual and no global state.  A TEST needs no fake
+// generator and no mocking: it writes the draws it wants and asserts
+// the exact clustering they produce, which is what the suite here
+// does.  And the caller CHOOSES ITS GENERATOR — a cryptographic one, a
+// counter-based one it can replay, a low-discrepancy sequence — rather
+// than inheriting whatever the library linked.
+//
+// A caller that has its own idea of where to start skips the seeding
+// entirely and hands `fit` the centroids it wants.
+//
+// K-MEANS IS DEFINED FOR ONE METRIC.  The update step is the MEAN, and
+// the mean of a set of points is the point that minimises the sum of
+// squared Euclidean distances to them — and nothing else.  Under the
+// Manhattan distance the minimiser is the median and the algorithm is
+// a different one, k-medians.  So no function here takes a
+// `ClusterMetric`: saying so is more useful than accepting a metric
+// and quietly ignoring it, which is what a library that takes one and
+// then computes means is doing.
+
+// A fitted k-means model: the labels, where the centroids ended, what
+// the inertia is, and how the iteration ended.
+//
+// ```novo
+// use clusterkmeans
+// use clusterlabels
+// use ndfloat
+//
+// fn main() [io]
+//     match ndfloat.of_list([0.0, 0.0, 10.0, 10.0], [2, 1])
+//         Err(e) => println(e.message())
+//         Ok(data) =>
+//             match clusterkmeans.fit_seeded(data, 2, [0.0, 0.5], 100, 0.000001)
+//                 Ok(m)  => println("${clusterlabels.cluster_count(m.labels)}")   // 2
+//                 Err(e) => println(e.message())
+// ```
+pub struct ClusterKmeansModel
+    // Which cluster each sample ended in.  `noise_count` is always 0:
+    // k-means assigns every sample.
+    labels: ClusterLabels
+    // Where the centroids ended, as a `[k, n_features]` array.  Row
+    // `c` is the centroid of cluster `c`.
+    centroids: NdFloat
+    // The sum over every sample of the squared distance to its own
+    // centroid.  The quantity the iteration minimises, and the number
+    // to compare two fits of the same data by — a fit with a lower
+    // inertia is a better one, and a fit with a LOT lower is usually a
+    // luckier seeding rather than a better `k`.
+    inertia: Float
+    // Whether the iteration reached a fixed point, used up its budget,
+    // or degenerated.
+    status: ClusterStatus
+    // How many assign-and-move passes ran.
+    iterations: Int
+
+// How many uniform draws `seed_plus_plus` needs to choose `k`
+// centroids.
+//
+// One for the first centroid, which is drawn uniformly from the
+// samples, and one for each of the `k - 1` that follow, which are
+// drawn with a probability proportional to the squared distance from
+// the nearest centroid already chosen.  So it is `k`, and the function
+// exists so that a caller never has to know that, and so that a change
+// of seeding strategy does not silently read past the end of somebody's
+// list.
+//
+// ```novo
+// use clusterkmeans
+//
+// fn main() [io]
+//     println("${clusterkmeans.uniforms_needed(3)}")   // 3
+// ```
+pub fn uniforms_needed(k: Int) -> Int
+    todo("cluster-nv.clusterkmeans.uniforms_needed")
+
+// `k` starting centroids chosen from the data by k-means++, using the
+// uniform draws the caller supplies.
+//
+// `uniforms` must hold exactly `uniforms_needed(k)` numbers, each in
+// `[0, 1)` — `ClusterUniformCountWrong` and `ClusterUniformOutOfRange`
+// say which rule was broken, and the second carries the index and the
+// value, because the usual cause is a generator returning a closed
+// interval or a raw integer.
+//
+// The result is a `[k, n_features]` array ready to hand to `fit`.
+// Two runs with the same data and the same draws give the same
+// centroids: nothing here consults anything the caller cannot see.
+//
+// ```novo
+// use clusterkmeans
+// use ndfloat
+//
+// fn main() [io]
+//     match ndfloat.of_list([0.0, 1.0, 10.0, 11.0], [4, 1])
+//         Err(e) => println(e.message())
+//         Ok(data) =>
+//             match clusterkmeans.seed_plus_plus(data, 2, [0.0, 0.9])
+//                 Ok(c)  => println("${ndfloat.shape(c).dims}")   // [2, 1]
+//                 Err(e) => println(e.message())
+// ```
+pub fn seed_plus_plus(data: NdFloat, k: Int, uniforms: [Float]) -> Result<NdFloat, ClusterFault>
+    todo("cluster-nv.clusterkmeans.seed_plus_plus")
+
+// Fit k-means to `data` from these starting centroids.
+//
+// `data` is `[n_samples, n_features]` and `centroids` is
+// `[k, n_features]`; `ClusterCentroidShapeWrong` carries both shapes
+// when they do not agree.  The iteration stops when no centroid moves
+// further than `tolerance`, or when `max_iterations` passes have run —
+// and the model's `status` says which, so a caller can tell a fixed
+// point from a budget that ran out.
+//
+// This is the entry point for a caller that already knows where to
+// start: a previous fit's centroids, a domain-specific guess, or a
+// grid.  Nothing random happens in it at all.
+//
+// ```novo
+// use clusterkmeans
+// use clusterlabels
+// use ndfloat
+//
+// fn main() [io]
+//     match ndfloat.of_list([0.0, 1.0, 10.0, 11.0], [4, 1])
+//         Err(e) => println(e.message())
+//         Ok(data) =>
+//             match ndfloat.of_list([0.0, 10.0], [2, 1])
+//                 Err(e) => println(e.message())
+//                 Ok(start) =>
+//                     match clusterkmeans.fit(data, start, 100, 0.000001)
+//                         Ok(m)  => println(clusterlabels.status_name(m.status))   // converged
+//                         Err(e) => println(e.message())
+// ```
+pub fn fit(data: NdFloat, centroids: NdFloat, max_iterations: Int,
+           tolerance: Float) -> Result<ClusterKmeansModel, ClusterFault>
+    todo("cluster-nv.clusterkmeans.fit")
+
+// `seed_plus_plus` followed by `fit`, in one call.
+//
+// The ordinary entry point.  It takes the uniform draws for the same
+// reason `seed_plus_plus` does, and it is a convenience rather than a
+// different algorithm: the two-call form is there for a caller that
+// wants to look at the seeding, or to seed once and fit several times.
+//
+// ```novo
+// use clusterkmeans
+// use ndfloat
+//
+// fn main() [io]
+//     match ndfloat.of_list([0.0, 1.0, 10.0, 11.0], [4, 1])
+//         Err(e) => println(e.message())
+//         Ok(data) =>
+//             match clusterkmeans.fit_seeded(data, 2, [0.0, 0.9], 100, 0.000001)
+//                 Ok(m)  => println("${m.inertia}")   // 1
+//                 Err(e) => println(e.message())
+// ```
+pub fn fit_seeded(data: NdFloat, k: Int, uniforms: [Float], max_iterations: Int,
+                  tolerance: Float) -> Result<ClusterKmeansModel, ClusterFault>
+    todo("cluster-nv.clusterkmeans.fit_seeded")
+
+// Assign every sample to its nearest centroid, with no iteration.
+//
+// One pass of the first half of the algorithm.  It is public because
+// it is what a caller does with NEW data against an existing fit —
+// scoring a batch against last week's centroids — and because
+// reimplementing "nearest centroid" is how a caller's scoring drifts
+// from the fit that produced the centroids.
+//
+// ```novo
+// use clusterkmeans
+// use clusterlabels
+// use ndfloat
+//
+// fn main() [io]
+//     match ndfloat.of_list([0.0, 1.0, 10.0], [3, 1])
+//         Err(e) => println(e.message())
+//         Ok(data) =>
+//             match ndfloat.of_list([0.0, 10.0], [2, 1])
+//                 Err(e) => println(e.message())
+//                 Ok(c) =>
+//                     match clusterkmeans.assign(data, c)
+//                         Ok(l)  => println("${clusterlabels.labels_of(l)}")   // [0, 0, 1]
+//                         Err(e) => println(e.message())
+// ```
+pub fn assign(data: NdFloat, centroids: NdFloat) -> Result<ClusterLabels, ClusterFault>
+    todo("cluster-nv.clusterkmeans.assign")
+
+// The inertia of an assignment: the sum over every sample of the
+// squared distance to the centroid it was assigned to.
+//
+// The number `fit` minimises, computable on its own so that a caller
+// can score a clustering it did not produce here, compare two values
+// of `k`, or check what the model says.  Samples with the noise label
+// contribute nothing, so an assignment from DBSCAN can be scored too.
+//
+// ```novo
+// use clusterkmeans
+// use ndfloat
+//
+// fn main() [io]
+//     match ndfloat.of_list([0.0, 2.0], [2, 1])
+//         Err(e) => println(e.message())
+//         Ok(data) =>
+//             match ndfloat.of_list([1.0], [1, 1])
+//                 Err(e) => println(e.message())
+//                 Ok(c) =>
+//                     match clusterkmeans.assign(data, c)
+//                         Err(e) => println(e.message())
+//                         Ok(l)  =>
+//                             match clusterkmeans.inertia(data, c, l)
+//                                 Ok(v)  => println("${v}")   // 2
+//                                 Err(e) => println(e.message())
+// ```
+pub fn inertia(data: NdFloat, centroids: NdFloat,
+               labels: ClusterLabels) -> Result<Float, ClusterFault>
+    todo("cluster-nv.clusterkmeans.inertia")
+
+// The cluster one point belongs to, against these centroids.
+//
+// The single-point form of `assign`, for scoring one observation as it
+// arrives rather than a batch.  `point` is a plain list of
+// `n_features` numbers; `ClusterCentroidShapeWrong` carries both
+// lengths when it is the wrong size.
+//
+// ```novo
+// use clusterkmeans
+// use ndfloat
+//
+// fn main() [io]
+//     match ndfloat.of_list([0.0, 10.0], [2, 1])
+//         Err(e) => println(e.message())
+//         Ok(c) =>
+//             match clusterkmeans.predict(c, [9.0])
+//                 Ok(i)  => println("${i}")   // 1
+//                 Err(e) => println(e.message())
+// ```
+pub fn predict(centroids: NdFloat, point: [Float]) -> Result<Int, ClusterFault>
+    todo("cluster-nv.clusterkmeans.predict")
+
+// The centroids of an assignment: the mean of the samples in each
+// cluster.
+//
+// One pass of the second half of the algorithm.  It is public because
+// it is how a caller turns labels it got from somewhere else —
+// DBSCAN, an agglomerative cut, a hand-made grouping — into centroids
+// it can score with `inertia` or `predict` against.  A cluster with no
+// members has no mean, and the result is `ClusterDegenerate` rather
+// than a row of zeros that would quietly attract points.
+//
+// ```novo
+// use clusterkmeans
+// use clusterlabels
+// use ndfloat
+//
+// fn main() [io]
+//     match ndfloat.of_list([0.0, 2.0, 10.0, 12.0], [4, 1])
+//         Err(e) => println(e.message())
+//         Ok(data) =>
+//             let l = ClusterLabels { assignment: [0, 0, 1, 1], cluster_count: 2, noise_count: 0 }
+//             match clusterkmeans.centroids_of(data, l)
+//                 Ok(c)  => println("${ndfloat.to_list(c)}")   // [1, 11]
+//                 Err(e) => println(e.message())
+// ```
+pub fn centroids_of(data: NdFloat, labels: ClusterLabels) -> Result<NdFloat, ClusterFault>
+    todo("cluster-nv.clusterkmeans.centroids_of")

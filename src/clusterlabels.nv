@@ -1,0 +1,314 @@
+// clusterlabels.nv — what a clustering answers, and the two things
+// every algorithm here has to say beyond the labels.
+//
+// A LABEL IS A CLUSTER NUMBER, AND NOISE IS NOT A CLUSTER.  Every
+// algorithm here answers one integer per sample.  For k-means and for
+// agglomerative clustering that integer is always a cluster, numbered
+// from 0.  For DBSCAN it may instead be NOISE: a point in no dense
+// region at all, which the algorithm does not assign and which a
+// caller must not treat as a member of anything.
+//
+// Scikit-learn writes that as the label -1, and the consequence is a
+// well-known class of bug — a program that counts clusters by taking
+// the maximum label plus one, or that indexes a per-cluster array with
+// the label, reads the noise points as a cluster or as an index off
+// the end of the array.  Here the noise label is still an integer, but
+// it is a NAMED one: `noise_label()` answers it, `is_noise` tests for
+// it, `cluster_count` never counts it, and `sizes` never includes it.
+// A caller that uses those four functions cannot make the mistake, and
+// a caller that reaches for the raw list gets `noise_count` beside it
+// so that the two numbers at least do not disagree.
+//
+// AND THE STATUS SAYS HOW THE ITERATION ENDED.  k-means is an
+// iteration, and an iteration that used up its budget has produced an
+// assignment that is not a fixed point: one more pass would move
+// points.  Returning only the labels loses that, and a caller cannot
+// get it back.  So `ClusterStatus` has three arms, the same three an
+// iterative method always has — it converged, the budget ran out, or
+// it degenerated — and the degenerate arm carries what degenerated,
+// because an empty cluster and a data set with fewer distinct points
+// than `k` have different fixes.
+//
+// DBSCAN and agglomerative clustering are not iterations and are
+// always `ClusterConverged`; the type is shared so that a caller can
+// write one reader for all three.
+
+// How a clustering ended.
+//
+// ```novo
+// use clusterlabels
+//
+// fn main() [io]
+//     println(clusterlabels.status_name(ClusterConverged))   // converged
+// ```
+pub enum ClusterStatus
+    // The assignment is a fixed point: another pass would move
+    // nothing, or the algorithm is not an iteration at all.
+    ClusterConverged
+    // The iteration budget ran out first.  The labels are the best so
+    // far and another pass would still move points; they are NOT a
+    // fixed point.
+    ClusterBudgetExhausted
+    // The fit produced fewer clusters than asked for, and `what` says
+    // why: an empty cluster after a reassignment, or a data set with
+    // fewer distinct points than `k`.  The two have different fixes,
+    // which is why the reason is carried.
+    ClusterDegenerate(what: Str)
+
+// How far apart two points are.
+//
+// One enum rather than a caller-supplied function, because the four
+// here are the four every library implements and a distance callback
+// in a `core` package would be a function value threaded through every
+// inner loop for no gain the caller can measure.
+//
+// ```novo
+// use clusterlabels
+//
+// fn main() [io]
+//     println(clusterlabels.metric_name(ClusterManhattan))   // manhattan
+// ```
+pub enum ClusterMetric
+    // The straight-line distance: the square root of the sum of the
+    // squared differences.
+    ClusterEuclidean
+    // The same without the square root.  It orders points identically
+    // to the Euclidean distance and costs no square root, so every
+    // nearest-point question can use it — and it is the one k-means
+    // minimises, which is why it has its own name here.
+    ClusterSquaredEuclidean
+    // The sum of the absolute differences: the distance a taxi drives
+    // on a grid.  Less sensitive to one coordinate being far off than
+    // the Euclidean distance is.
+    ClusterManhattan
+    // The largest absolute difference in any one coordinate.
+    ClusterChebyshev
+
+// One label per sample, and the two counts that keep them honest.
+//
+// ```novo
+// use clusterlabels
+//
+// fn main() [io]
+//     let l = ClusterLabels { assignment: [0, 0, 1, 1], cluster_count: 2, noise_count: 0 }
+//     println("${clusterlabels.cluster_count(l)}")   // 2
+// ```
+pub struct ClusterLabels
+    // The cluster each sample was put in, in the data's row order.
+    // A cluster is numbered from 0; a sample in no cluster carries
+    // `noise_label()`.
+    assignment: [Int]
+    // How many clusters there are.  Never counts the noise.
+    cluster_count: Int
+    // How many samples were assigned to no cluster.  Always 0 for
+    // k-means and for agglomerative clustering, which assign every
+    // sample.
+    noise_count: Int
+
+// The label a sample in no cluster carries.
+//
+// A function rather than a number written at each call site, so that a
+// comparison against it is greppable and so that the value is stated
+// once.  It is negative, so it can never collide with a cluster
+// number.
+//
+// ```novo
+// use clusterlabels
+//
+// fn main() [io]
+//     println("${clusterlabels.noise_label() < 0}")   // true
+// ```
+pub fn noise_label() -> Int
+    todo("cluster-nv.clusterlabels.noise_label")
+
+// The raw assignment list, in the data's row order.
+//
+// For a caller that is going to iterate it itself.  `is_noise` and
+// `members_of` are the safer ways in, and they are safer precisely
+// because they know about the noise label.
+//
+// ```novo
+// use clusterlabels
+//
+// fn main() [io]
+//     let l = ClusterLabels { assignment: [0, 1], cluster_count: 2, noise_count: 0 }
+//     println("${clusterlabels.labels_of(l)}")   // [0, 1]
+// ```
+pub fn labels_of(labels: ClusterLabels) -> [Int]
+    todo("cluster-nv.clusterlabels.labels_of")
+
+// The label of one sample.
+//
+// `ClusterIndexOutOfRange` when the sample is not one, carrying the
+// index and the count — rather than a `None` that a caller turns into
+// a default and then clusters on.
+//
+// ```novo
+// use clusterlabels
+//
+// fn main() [io]
+//     let l = ClusterLabels { assignment: [0, 1], cluster_count: 2, noise_count: 0 }
+//     match clusterlabels.label_at(l, 1)
+//         Ok(c)  => println("${c}")   // 1
+//         Err(e) => println(e.message())
+// ```
+pub fn label_at(labels: ClusterLabels, sample: Int) -> Result<Int, ClusterFault>
+    todo("cluster-nv.clusterlabels.label_at")
+
+// How many clusters there are, never counting the noise.
+//
+// ```novo
+// use clusterlabels
+//
+// fn main() [io]
+//     let l = ClusterLabels { assignment: [0, 0, 1], cluster_count: 2, noise_count: 0 }
+//     println("${clusterlabels.cluster_count(l)}")   // 2
+// ```
+pub fn cluster_count(labels: ClusterLabels) -> Int
+    todo("cluster-nv.clusterlabels.cluster_count")
+
+// How many samples are in no cluster.
+//
+// Always 0 from k-means and from agglomerative clustering.  A DBSCAN
+// run whose noise count is most of the data has an `epsilon` that is
+// too small, and this is the number that says so.
+//
+// ```novo
+// use clusterlabels
+//
+// fn main() [io]
+//     let l = ClusterLabels { assignment: [0, -1], cluster_count: 1, noise_count: 1 }
+//     println("${clusterlabels.noise_count(l)}")   // 1
+// ```
+pub fn noise_count(labels: ClusterLabels) -> Int
+    todo("cluster-nv.clusterlabels.noise_count")
+
+// Whether this sample was assigned to no cluster.
+//
+// The test to write instead of comparing a label against -1.
+//
+// ```novo
+// use clusterlabels
+//
+// fn main() [io]
+//     let l = ClusterLabels { assignment: [0, -1], cluster_count: 1, noise_count: 1 }
+//     match clusterlabels.is_noise(l, 1)
+//         Ok(b)  => println("${b}")   // true
+//         Err(e) => println(e.message())
+// ```
+pub fn is_noise(labels: ClusterLabels, sample: Int) -> Result<Bool, ClusterFault>
+    todo("cluster-nv.clusterlabels.is_noise")
+
+// The sample indices in one cluster, in increasing order.
+//
+// `ClusterIndexOutOfRange` for a cluster that is not one.  Asking for
+// the noise label here is that fault too: the noise is not a cluster,
+// and a function that answered its members would be inviting the
+// caller to treat it as one.
+//
+// ```novo
+// use clusterlabels
+//
+// fn main() [io]
+//     let l = ClusterLabels { assignment: [0, 1, 0], cluster_count: 2, noise_count: 0 }
+//     match clusterlabels.members_of(l, 0)
+//         Ok(m)  => println("${m}")   // [0, 2]
+//         Err(e) => println(e.message())
+// ```
+pub fn members_of(labels: ClusterLabels, cluster: Int) -> Result<[Int], ClusterFault>
+    todo("cluster-nv.clusterlabels.members_of")
+
+// How many samples are in each cluster, indexed by cluster number.
+//
+// Its length is `cluster_count`, and the noise is not in it.  The
+// first thing to look at after a fit: a k-means run with a cluster of
+// one point and a cluster of everything else has found a different
+// answer from the one the caller wanted.
+//
+// ```novo
+// use clusterlabels
+//
+// fn main() [io]
+//     let l = ClusterLabels { assignment: [0, 1, 0], cluster_count: 2, noise_count: 0 }
+//     println("${clusterlabels.sizes(l)}")   // [2, 1]
+// ```
+pub fn sizes(labels: ClusterLabels) -> [Int]
+    todo("cluster-nv.clusterlabels.sizes")
+
+// The distance between two points under this metric.
+//
+// `ClusterArrayFault` is not raised here; the two points are plain
+// lists and the only failure is a length mismatch, which is
+// `ClusterCentroidShapeWrong` carrying both lengths.  It is public
+// because a caller checking a clustering's quality — a silhouette
+// score, a nearest-centroid check — needs exactly the distance the
+// clustering used, and reimplementing it is how the two drift apart.
+//
+// ```novo
+// use clusterlabels
+//
+// fn main() [io]
+//     match clusterlabels.distance(ClusterManhattan, [0.0, 0.0], [3.0, 4.0])
+//         Ok(d)  => println("${d}")   // 7
+//         Err(e) => println(e.message())
+// ```
+pub fn distance(metric: ClusterMetric, left: [Float], right: [Float]) -> Result<Float, ClusterFault>
+    todo("cluster-nv.clusterlabels.distance")
+
+// The metric's name, for a log line and for a fault message:
+// `"euclidean"`, `"squared euclidean"`, `"manhattan"`,
+// `"chebyshev"`.
+//
+// ```novo
+// use clusterlabels
+//
+// fn main() [io]
+//     println(clusterlabels.metric_name(ClusterSquaredEuclidean))   // squared euclidean
+// ```
+pub fn metric_name(metric: ClusterMetric) -> Str
+    todo("cluster-nv.clusterlabels.metric_name")
+
+// The metric a name denotes, or `None`.
+//
+// For reading a metric out of configuration.  A spelling this package
+// does not use answers `None` rather than a default, because silently
+// clustering under the Euclidean distance when the operator asked for
+// Manhattan is a wrong answer that looks right.
+//
+// ```novo
+// use clusterlabels
+//
+// fn main() [io]
+//     match clusterlabels.metric_named("chebyshev")
+//         Some(m) => println(clusterlabels.metric_name(m))   // chebyshev
+//         None    => println("no such metric")
+// ```
+pub fn metric_named(name: Str) -> ?ClusterMetric
+    todo("cluster-nv.clusterlabels.metric_named")
+
+// The status's name, for a log line and a test: `"converged"`,
+// `"budget exhausted"`, `"degenerate: <what>"`.
+//
+// ```novo
+// use clusterlabels
+//
+// fn main() [io]
+//     println(clusterlabels.status_name(ClusterDegenerate("empty cluster")))
+// ```
+pub fn status_name(status: ClusterStatus) -> Str
+    todo("cluster-nv.clusterlabels.status_name")
+
+// Whether a status is `ClusterConverged`.
+//
+// The one-line check a caller writes when it only wants to know
+// whether to trust the labels.  A function rather than a field so that
+// the three arms stay one thing to match on.
+//
+// ```novo
+// use clusterlabels
+//
+// fn main() [io]
+//     println("${clusterlabels.converged(ClusterBudgetExhausted)}")   // false
+// ```
+pub fn converged(status: ClusterStatus) -> Bool
+    todo("cluster-nv.clusterlabels.converged")

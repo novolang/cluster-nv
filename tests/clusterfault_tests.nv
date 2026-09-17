@@ -1,0 +1,73 @@
+// clusterfault_tests.nv — a refusal names the argument, and prints
+// both sides.
+//
+// RED ON PURPOSE: every assertion reaches `not implemented:
+// cluster-nv.ClusterFault.message`.  What is asserted is the one rule
+// the `Error` implementation has to follow: every variant prints what
+// it compared, so a reader never goes back to the call to find out
+// what the other side was — and `ClusterArrayFault` delegates, so
+// ndarray-nv's own shapes survive into our message.
+
+use std.test
+
+@test
+fn test_a_fault_prints_both_sides_of_what_it_compared() [io]
+    test.case("k against the sample count — the message that explains itself")
+    let k = ClusterBadK(5, 3)
+    test.assert(str.contains(k.message(), "5"))
+    test.assert(str.contains(k.message(), "3"))
+
+    test.case("the draws given against the draws needed")
+    let u = ClusterUniformCountWrong(2, 3)
+    test.assert(str.contains(u.message(), "2"))
+    test.assert(str.contains(u.message(), "3"))
+
+    test.case("a draw outside the unit interval says which one and what it was")
+    let o = ClusterUniformOutOfRange(1, 1.0)
+    test.assert(str.contains(o.message(), "1"))
+
+    test.case("a centroid shape carries both shapes")
+    let c = ClusterCentroidShapeWrong(2, 1, 2, 2)
+    test.assert(str.len(c.message()) > 0)
+
+@test
+fn test_the_configuration_faults_name_the_field_to_change() [io]
+    test.case("a radius that is not positive")
+    test.assert(str.contains(ClusterBadEpsilon(0.0).message(), "0"))
+
+    test.case("a minimum below one")
+    test.assert(str.contains(ClusterBadMinPoints(0).message(), "0"))
+
+    test.case("a budget that runs nothing")
+    test.assert(str.contains(ClusterBadBudget(0).message(), "0"))
+
+    test.case("an algorithm and a metric that do not go together names both")
+    let m = ClusterMetricUnsupported("k-means", "manhattan")
+    test.assert(str.contains(m.message(), "k-means"))
+    test.assert(str.contains(m.message(), "manhattan"))
+
+@test
+fn test_the_data_shape_faults() [io]
+    test.case("data that is not a matrix carries the rank it had")
+    test.assert(str.contains(ClusterNotMatrix(1).message(), "1"))
+
+    test.case("empty data has its own arm, because zero rows is not a rank problem")
+    test.assert(str.len(ClusterEmptyData.message()) > 0)
+
+    test.case("an index off the end carries the index and the count")
+    let i = ClusterIndexOutOfRange(9, 5)
+    test.assert(str.contains(i.message(), "9"))
+    test.assert(str.contains(i.message(), "5"))
+
+    test.case("a cut that names no partition says what was wrong with it")
+    test.assert(str.contains(ClusterBadCut("a cluster count of 0").message(), "0"))
+
+@test
+fn test_an_array_fault_is_passed_through_rather_than_rewritten() [io]
+    // Rewriting ndarray-nv's failure into a sentence of our own would
+    // lose the shapes it already put in it, and would stop a caller
+    // matching on the original.
+    test.case("the inner fault's own message survives")
+    let inner = NdShapeMismatch([4, 1], [4, 2])
+    let outer = ClusterArrayFault(inner)
+    test.assert_eq_str(outer.message(), inner.message())

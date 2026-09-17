@@ -1,0 +1,198 @@
+// clusterkmeans_tests.nv — k-means, and the draws that arrive from
+// outside.
+//
+// RED ON PURPOSE: every assertion reaches `not implemented:
+// cluster-nv.clusterkmeans.<fn>`.
+//
+// The fixture is four points on a line — 0, 1, 10, 11 — which is two
+// well-separated pairs and the smallest data set on which every claim
+// k-means makes can be checked by hand.  Its two-cluster fit has
+// centroids at 0.5 and 10.5 and an inertia of 4 times 0.25, which is
+// 1.  Every number asserted below is that arithmetic and not a value
+// copied from a run.
+//
+// The seeding draws are written into the test.  That is the point of
+// taking them as an argument: there is no generator to fake, no seed
+// to set and no global to reset between cases.
+
+use std.test
+use clusterkmeans
+use clusterlabels
+use ndfloat
+
+fn four_points() -> NdFloat
+    match ndfloat.of_list([0.0, 1.0, 10.0, 11.0], [4, 1])
+        Ok(a)  => a
+        Err(_) => ndfloat.scalar(0.0)
+
+fn two_centroids() -> NdFloat
+    match ndfloat.of_list([0.0, 10.0], [2, 1])
+        Ok(a)  => a
+        Err(_) => ndfloat.scalar(0.0)
+
+@test
+fn test_the_seeding_needs_one_draw_per_centroid_and_says_so() [io]
+    // A caller must never have to know that k-means++ draws the first
+    // centroid uniformly and the rest by weight; it asks how many
+    // numbers to bring.
+    test.case("one per centroid")
+    test.assert(clusterkmeans.uniforms_needed(1) == 1)
+    test.assert(clusterkmeans.uniforms_needed(3) == 3)
+
+@test
+fn test_seeding_is_reproducible_because_the_draws_are_the_callers() [io]
+    test.case("two centroids from two draws, shaped [k, n_features]")
+    match clusterkmeans.seed_plus_plus(four_points(), 2, [0.0, 0.9])
+        Err(e) => test.fail(e.message())
+        Ok(c)  => test.assert(ndfloat.shape(c).dims == [2, 1])
+
+    test.case("the same data and the same draws give the same centroids, always")
+    match clusterkmeans.seed_plus_plus(four_points(), 2, [0.0, 0.9])
+        Err(e)    => test.fail(e.message())
+        Ok(first) =>
+            match clusterkmeans.seed_plus_plus(four_points(), 2, [0.0, 0.9])
+                Err(e)     => test.fail(e.message())
+                Ok(second) => test.assert(ndfloat.to_list(first) == ndfloat.to_list(second))
+
+    test.case("the first draw of 0.0 takes the first sample, so the first centroid is 0")
+    match clusterkmeans.seed_plus_plus(four_points(), 2, [0.0, 0.9])
+        Err(e) => test.fail(e.message())
+        Ok(c)  => test.assert(ndfloat.to_list(c)[0] == 0.0)
+
+@test
+fn test_the_draws_are_checked_before_anything_is_computed() [io]
+    test.case("too few draws for the k asked for")
+    match clusterkmeans.seed_plus_plus(four_points(), 3, [0.1, 0.2])
+        Ok(_)  => test.fail("three centroids need three draws")
+        Err(_) => test.assert(true)
+
+    test.case("a draw outside [0, 1) — the usual cause is a closed interval or a raw integer")
+    match clusterkmeans.seed_plus_plus(four_points(), 2, [0.0, 1.0])
+        Ok(_)  => test.fail("1.0 is not in [0, 1)")
+        Err(_) => test.assert(true)
+
+    test.case("k above the sample count divides four points into five")
+    match clusterkmeans.seed_plus_plus(four_points(), 5, [0.0, 0.1, 0.2, 0.3, 0.4])
+        Ok(_)  => test.fail("five clusters from four points")
+        Err(_) => test.assert(true)
+
+@test
+fn test_a_fit_from_given_centroids_is_the_arithmetic_worked_by_hand() [io]
+    // 0 and 1 go to the first centroid, 10 and 11 to the second; the
+    // means are 0.5 and 10.5; every point is half a unit from its
+    // centroid, so the inertia is four times a quarter.
+    test.case("the labels are the two pairs")
+    match clusterkmeans.fit(four_points(), two_centroids(), 100, 0.000001)
+        Err(e) => test.fail(e.message())
+        Ok(m)  => test.assert(clusterlabels.labels_of(m.labels) == [0, 0, 1, 1])
+
+    test.case("the centroids are the means")
+    match clusterkmeans.fit(four_points(), two_centroids(), 100, 0.000001)
+        Err(e) => test.fail(e.message())
+        Ok(m)  =>
+            test.assert_approx(ndfloat.to_list(m.centroids)[0], 0.5, 0.0000001)
+            test.assert_approx(ndfloat.to_list(m.centroids)[1], 10.5, 0.0000001)
+
+    test.case("the inertia is 1")
+    match clusterkmeans.fit(four_points(), two_centroids(), 100, 0.000001)
+        Err(e) => test.fail(e.message())
+        Ok(m)  => test.assert_approx(m.inertia, 1.0, 0.0000001)
+
+    test.case("k-means assigns every sample, so there is no noise")
+    match clusterkmeans.fit(four_points(), two_centroids(), 100, 0.000001)
+        Err(e) => test.fail(e.message())
+        Ok(m)  =>
+            test.assert(clusterlabels.noise_count(m.labels) == 0)
+            test.assert(clusterlabels.cluster_count(m.labels) == 2)
+
+    test.case("and it converged, which is a different thing from having finished")
+    match clusterkmeans.fit(four_points(), two_centroids(), 100, 0.000001)
+        Err(e) => test.fail(e.message())
+        Ok(m)  => test.assert(clusterlabels.converged(m.status))
+
+@test
+fn test_a_budget_of_one_pass_says_so_rather_than_claiming_a_fixed_point() [io]
+    // The distinction the status exists for: one pass from these
+    // centroids moves them, so the result is not a fixed point.
+    test.case("one iteration, and the report is honest about it")
+    match clusterkmeans.fit(four_points(), two_centroids(), 1, 0.0)
+        Err(e) => test.fail(e.message())
+        Ok(m)  =>
+            test.assert(m.iterations == 1)
+            test.assert_eq_str(clusterlabels.status_name(m.status), "budget exhausted")
+
+    test.case("a budget of zero runs nothing and is refused, not silently obeyed")
+    match clusterkmeans.fit(four_points(), two_centroids(), 0, 0.000001)
+        Ok(_)  => test.fail("zero passes returns the seeding dressed as a fit")
+        Err(_) => test.assert(true)
+
+@test
+fn test_centroids_of_the_wrong_shape_are_refused_with_both_shapes() [io]
+    test.case("two features of centroid against one feature of data")
+    match ndfloat.of_list([0.0, 0.0, 10.0, 10.0], [2, 2])
+        Err(e)   => test.fail(e.message())
+        Ok(wide) =>
+            match clusterkmeans.fit(four_points(), wide, 100, 0.000001)
+                Ok(_)  => test.fail("a [2, 2] centroid set does not fit [4, 1] data")
+                Err(_) => test.assert(true)
+
+@test
+fn test_fit_seeded_is_the_two_calls_in_one() [io]
+    test.case("the same answer the two-call form gives")
+    match clusterkmeans.fit_seeded(four_points(), 2, [0.0, 0.9], 100, 0.000001)
+        Err(e) => test.fail(e.message())
+        Ok(m)  =>
+            test.assert(clusterlabels.cluster_count(m.labels) == 2)
+            test.assert_approx(m.inertia, 1.0, 0.0000001)
+
+@test
+fn test_assign_and_predict_score_data_against_centroids_that_already_exist() [io]
+    // What a caller does with new data against last week's fit, and
+    // the reason neither is left for the caller to reimplement.
+    test.case("assign labels a batch")
+    match clusterkmeans.assign(four_points(), two_centroids())
+        Err(e) => test.fail(e.message())
+        Ok(l)  => test.assert(clusterlabels.labels_of(l) == [0, 0, 1, 1])
+
+    test.case("predict labels one point")
+    match clusterkmeans.predict(two_centroids(), [9.0])
+        Err(e) => test.fail(e.message())
+        Ok(i)  => test.assert(i == 1)
+
+    test.case("a point exactly between two centroids goes to the lower-numbered one")
+    match clusterkmeans.predict(two_centroids(), [5.0])
+        Err(e) => test.fail(e.message())
+        Ok(i)  => test.assert(i == 0)
+
+    test.case("and a point of the wrong width is refused")
+    match clusterkmeans.predict(two_centroids(), [1.0, 2.0])
+        Ok(_)  => test.fail("a two-dimensional point against one-dimensional centroids")
+        Err(_) => test.assert(true)
+
+@test
+fn test_inertia_and_centroids_of_are_the_two_halves_of_a_pass() [io]
+    // Both public because a caller scoring labels that came from
+    // somewhere else — DBSCAN, a dendrogram cut, a hand-made grouping
+    // — needs exactly the arithmetic the fit used.
+    let pairs = ClusterLabels { assignment: [0, 0, 1, 1], cluster_count: 2, noise_count: 0 }
+
+    test.case("centroids_of takes the mean of each cluster")
+    match clusterkmeans.centroids_of(four_points(), pairs)
+        Err(e) => test.fail(e.message())
+        Ok(c)  =>
+            test.assert_approx(ndfloat.to_list(c)[0], 0.5, 0.0000001)
+            test.assert_approx(ndfloat.to_list(c)[1], 10.5, 0.0000001)
+
+    test.case("inertia sums the squared distance from every sample to its own centroid")
+    match clusterkmeans.centroids_of(four_points(), pairs)
+        Err(e) => test.fail(e.message())
+        Ok(c)  =>
+            match clusterkmeans.inertia(four_points(), c, pairs)
+                Err(e) => test.fail(e.message())
+                Ok(v)  => test.assert_approx(v, 1.0, 0.0000001)
+
+    test.case("a cluster with no members has no mean, and that is degenerate rather than a row of zeros")
+    let empty_middle = ClusterLabels { assignment: [0, 0, 2, 2], cluster_count: 3, noise_count: 0 }
+    match clusterkmeans.centroids_of(four_points(), empty_middle)
+        Ok(_)  => test.fail("cluster 1 has no members and therefore no mean")
+        Err(_) => test.assert(true)

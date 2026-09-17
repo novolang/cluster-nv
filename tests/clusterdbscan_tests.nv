@@ -1,0 +1,150 @@
+// clusterdbscan_tests.nv — density, and the points that have none.
+//
+// RED ON PURPOSE: every assertion reaches `not implemented:
+// cluster-nv.clusterdbscan.<fn>`.
+//
+// The fixture is five points on a line: 0, 0.1, 0.2 close together,
+// then 10 and 10.1 close together, and one at 50 on its own.  With a
+// radius of 0.5 and a minimum of 2, that is two clusters and one noise
+// point, and every neighbour count below can be read straight off the
+// numbers.
+
+use std.test
+use clusterdbscan
+use clusterlabels
+use ndfloat
+
+fn five_points() -> NdFloat
+    match ndfloat.of_list([0.0, 0.1, 0.2, 10.0, 50.0], [5, 1])
+        Ok(a)  => a
+        Err(_) => ndfloat.scalar(0.0)
+
+fn tight() -> ClusterDbscanParams
+    clusterdbscan.params(0.5, 2, ClusterEuclidean)
+
+@test
+fn test_the_parameters_are_a_value_a_program_names_once() [io]
+    test.case("the three fields are what was asked for")
+    let p = tight()
+    test.assert_approx(p.epsilon, 0.5, 0.0000001)
+    test.assert(p.min_points == 2)
+    test.assert_eq_str(clusterlabels.metric_name(p.metric), "euclidean")
+
+    test.case("all four metrics are allowed here, because DBSCAN never takes a mean")
+    test.assert_eq_str(clusterlabels.metric_name(clusterdbscan.params(1.0, 3, ClusterManhattan).metric), "manhattan")
+
+@test
+fn test_a_density_that_is_not_one_is_caught_where_the_configuration_is_read() [io]
+    // A radius of zero makes every point its own neighbourhood and
+    // every point noise: an answer nobody wants and a mistake
+    // everybody makes once.
+    test.case("a radius of zero")
+    match clusterdbscan.check(clusterdbscan.params(0.0, 2, ClusterEuclidean))
+        None    => test.fail("a radius of zero labels everything noise")
+        Some(_) => test.assert(true)
+
+    test.case("a negative radius")
+    match clusterdbscan.check(clusterdbscan.params(-1.0, 2, ClusterEuclidean))
+        None    => test.fail("a negative radius is not a radius")
+        Some(_) => test.assert(true)
+
+    test.case("a minimum below one")
+    match clusterdbscan.check(clusterdbscan.params(0.5, 0, ClusterEuclidean))
+        None    => test.fail("a core point contains at least itself")
+        Some(_) => test.assert(true)
+
+    test.case("and a usable pair answers None")
+    test.assert_none(clusterdbscan.check(tight()))
+
+@test
+fn test_the_fit_finds_two_clusters_and_one_noise_point() [io]
+    test.case("the far point is in no cluster")
+    match clusterdbscan.fit(five_points(), tight())
+        Err(e) => test.fail(e.message())
+        Ok(l)  =>
+            test.assert(clusterlabels.cluster_count(l) == 2)
+            test.assert(clusterlabels.noise_count(l) == 1)
+
+    test.case("and it is the one at 50, not one of the others")
+    match clusterdbscan.fit(five_points(), tight())
+        Err(e) => test.fail(e.message())
+        Ok(l)  =>
+            match clusterlabels.is_noise(l, 4)
+                Err(e) => test.fail(e.message())
+                Ok(b)  => test.assert(b)
+
+    test.case("clusters are numbered from 0 in the order they are discovered, scanning row order")
+    match clusterdbscan.fit(five_points(), tight())
+        Err(e) => test.fail(e.message())
+        Ok(l)  => test.assert(clusterlabels.labels_of(l) == [0, 0, 0, 1, -1])
+
+    test.case("DBSCAN is one pass, so it is always converged")
+    match clusterdbscan.fit(five_points(), tight())
+        Err(e) => test.fail(e.message())
+        Ok(l)  => test.assert(clusterlabels.cluster_count(l) == 2)
+
+    test.case("a radius wide enough to reach everything makes one cluster and no noise")
+    match clusterdbscan.fit(five_points(), clusterdbscan.params(100.0, 2, ClusterEuclidean))
+        Err(e) => test.fail(e.message())
+        Ok(l)  =>
+            test.assert(clusterlabels.cluster_count(l) == 1)
+            test.assert(clusterlabels.noise_count(l) == 0)
+
+@test
+fn test_the_neighbourhood_query_counts_the_point_itself() [io]
+    test.case("0.0 has 0.1 and 0.2 within half a unit, itself included")
+    match clusterdbscan.neighbours(five_points(), 0, tight())
+        Err(e) => test.fail(e.message())
+        Ok(n)  => test.assert(n == [0, 1, 2])
+
+    test.case("the point at 50 has only itself")
+    match clusterdbscan.neighbours(five_points(), 4, tight())
+        Err(e) => test.fail(e.message())
+        Ok(n)  => test.assert(n == [4])
+
+    test.case("and a sample that is not one is refused")
+    match clusterdbscan.neighbours(five_points(), 9, tight())
+        Ok(_)  => test.fail("there is no sample 9 in five samples")
+        Err(_) => test.assert(true)
+
+@test
+fn test_a_core_point_is_the_distinction_everything_else_rests_on() [io]
+    test.case("0.0 has three neighbours and needs two, so it is core")
+    match clusterdbscan.is_core_point(five_points(), 0, tight())
+        Err(e) => test.fail(e.message())
+        Ok(b)  => test.assert(b)
+
+    test.case("10.0 has only itself, so it is not — it is a cluster of one that is noise")
+    match clusterdbscan.is_core_point(five_points(), 3, tight())
+        Err(e) => test.fail(e.message())
+        Ok(b)  => test.assert(not b)
+
+    test.case("raising the minimum above the neighbourhood size makes even 0.0 non-core")
+    match clusterdbscan.is_core_point(five_points(), 0, clusterdbscan.params(0.5, 4, ClusterEuclidean))
+        Err(e) => test.fail(e.message())
+        Ok(b)  => test.assert(not b)
+
+@test
+fn test_the_k_distance_plot_is_how_a_radius_gets_chosen() [io]
+    // Choosing epsilon by guessing is the biggest reason a DBSCAN run
+    // disappoints, and the caller cannot compute this without
+    // reimplementing the distance the fit will use.
+    test.case("one distance per sample")
+    match clusterdbscan.k_distances(five_points(), 1, ClusterEuclidean)
+        Err(e) => test.fail(e.message())
+        Ok(d)  => test.assert(list.len(d) == 5)
+
+    test.case("sorted from largest to smallest, so the knee is read left to right")
+    match clusterdbscan.k_distances(five_points(), 1, ClusterEuclidean)
+        Err(e) => test.fail(e.message())
+        Ok(d)  => test.assert(d[0] >= d[4])
+
+    test.case("the largest is the isolated point's, which is 39.9 away from the nearest other")
+    match clusterdbscan.k_distances(five_points(), 1, ClusterEuclidean)
+        Err(e) => test.fail(e.message())
+        Ok(d)  => test.assert_approx(d[0], 39.9, 0.0000001)
+
+    test.case("and the smallest is one of the three tight points, a tenth apart")
+    match clusterdbscan.k_distances(five_points(), 1, ClusterEuclidean)
+        Err(e) => test.fail(e.message())
+        Ok(d)  => test.assert_approx(d[4], 0.1, 0.0000001)

@@ -1,0 +1,56 @@
+[package]
+name        = "cluster-nv"
+version     = "0.0.1"
+description = "Unsupervised clustering over ndarray-nv matrices: k-means with k-means++ seeding whose random draws the caller supplies, DBSCAN with its noise a named thing rather than a negative label, and agglomerative clustering whose tree is built once and cut as many times as a caller likes."
+license     = "Apache-2.0"
+
+# An INTERFACE release: every `pub fn` body is a `todo()`, so the
+# signatures and the effect rows are published and nothing is
+# implemented.  `novo pkg publish` recognises the shape and requires
+# both the draft stability and the 0.0.x version; the first
+# implementation is the 0.1.0 published over it.
+stability   = "draft"
+
+# `core`.  Clustering is arithmetic over a matrix the caller already
+# holds, and the one thing that would have broken the budget is
+# k-means++, which draws its starting centroids at random — `[rand]` is
+# a host effect.  So the draws are an ARGUMENT: `seed_plus_plus` takes
+# a list of uniforms in [0, 1) and `uniforms_needed` says how many.
+# Nothing here reads a clock, opens a file or prints a trace either.
+# The whole surface is `[]`.
+layer       = "core"
+
+category    = "science"
+
+tags        = ["clustering", "kmeans", "dbscan", "agglomerative", "unsupervised", "machine-learning", "science"]
+repository  = "https://github.com/novolang/cluster-nv"
+maintainers = ["novo-lang"]
+novo        = ">= 0.9.0"
+
+# A library: no `main`, so `novo pkg build` type-checks and
+# effect-checks every module under `src/` and writes no binary.
+
+[docs.pages]
+"README.md" = "k-means, DBSCAN and agglomerative clustering with the randomness supplied by the caller"
+
+[dependencies]
+# ndarray-nv supplies `NdFloat`, the `[n_samples, n_features]` matrix
+# every algorithm here takes and the `[k, n_features]` matrix k-means
+# answers.  Taking its type rather than a `[[Float]]` of our own means
+# a caller that already holds its data as an array — from a CSV read,
+# from a dataframe column, from a previous computation — hands the
+# same value over with no copy and no conversion, and gets centroids
+# back that its other array code can use directly.  ndarray-nv is
+# `core`, so the layer rule holds.  Its `NdFault` is carried
+# unchanged by `ClusterArrayFault` rather than rewritten, so the
+# shapes it compared survive into our message.
+#
+# `^0.0.1` pins EXACTLY 0.0.1: a `0.0.x` range admits no other
+# version, because every 0.0.x release is an interface that may
+# change any signature.
+#
+# NOTE FOR THE IMPLEMENTATION LANE: ndarray-nv 0.0.1 is itself an
+# interface — every one of its bodies is a `todo()` — so nothing here
+# can be implemented before it is.  The README's Status section says
+# so rather than leaving it to be discovered.
+ndarray-nv = "^0.0.1"

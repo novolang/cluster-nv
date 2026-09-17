@@ -1,0 +1,198 @@
+// clusterdbscan.nv — DBSCAN: clusters of any shape, and points that
+// belong to none.
+//
+// WHAT DBSCAN IS.  Density-Based Spatial Clustering of Applications
+// with Noise, published by Ester, Kriegel, Sander and Xu in 1996.  It
+// has two parameters: a radius, called EPSILON, and a count, called
+// MIN_POINTS.  A sample is a CORE POINT when at least `min_points`
+// samples — itself included — lie within `epsilon` of it.  Two core
+// points within `epsilon` of each other are in the same cluster, and
+// so, transitively, is every core point reachable from either.  A
+// non-core sample within `epsilon` of a core point is a BORDER POINT
+// and joins that core point's cluster.  Everything else is NOISE.
+//
+// WHAT THAT BUYS, AND WHAT IT COSTS.  k-means divides the plane into
+// straight-sided pieces and puts every point in one of them.  DBSCAN
+// follows the shape of whatever is dense: two interleaved crescents,
+// a ring around a blob, a long thin filament — all of which k-means
+// cuts in half.  It also does not need to be told how many clusters
+// there are; it finds as many as the density supports.
+//
+// The cost is that it needs to be told the density instead, and
+// `epsilon` is in the units of the data.  A radius that is too small
+// makes everything noise; one that is too large makes everything one
+// cluster.  `clusterlabels.noise_count` is the first number to look at
+// after a fit, and it is the one that says which mistake was made.
+//
+// BORDER POINTS ARE NOT DETERMINISTIC IN THE ORIGINAL ALGORITHM, AND
+// THEY ARE HERE.  A border point within `epsilon` of core points in
+// two different clusters belongs to whichever one reached it first, so
+// the original algorithm's answer depends on the order the points are
+// visited.  This package visits samples in the data's ROW ORDER, and
+// says so, so the same data gives the same labels every time.  That is
+// the same reproducibility k-means gets from taking its draws as an
+// argument, arrived at differently because DBSCAN needs no draws at
+// all.
+
+// The two parameters, and the distance they are measured in.
+//
+// A value rather than three arguments at each call site, for the
+// reason every parameter block in this package is one: "what density
+// does this program call a cluster" is a thing with a definition, a
+// place in the source and a diff when it changes.
+//
+// ```novo
+// use clusterdbscan
+// use clusterlabels
+//
+// fn main() [io]
+//     let p = clusterdbscan.params(0.5, 4, ClusterEuclidean)
+//     println("${p.min_points} ${clusterlabels.metric_name(p.metric)}")   // 4 euclidean
+// ```
+pub struct ClusterDbscanParams
+    // The neighbourhood radius, in the units of the data.  Must be
+    // positive: a radius of zero makes every sample its own
+    // neighbourhood and every sample noise.
+    epsilon: Float
+    // How many samples — the sample itself included — must lie within
+    // `epsilon` for it to be a core point.  The original paper's rule
+    // of thumb is twice the number of features.
+    min_points: Int
+    // How distance is measured.  All four metrics are defined here,
+    // unlike in k-means, because DBSCAN never takes a mean: it only
+    // ever asks whether two points are within `epsilon` of each other.
+    metric: ClusterMetric
+
+// A parameter value.
+//
+// It does not validate — `check` does, and it is separate so that a
+// program can build its parameters where its configuration is read
+// and check them once at start-up, where the message can name the
+// field.
+//
+// ```novo
+// use clusterdbscan
+//
+// fn main() [io]
+//     println("${clusterdbscan.params(0.5, 4, ClusterEuclidean).epsilon}")   // 0.5
+// ```
+pub fn params(epsilon: Float, min_points: Int, metric: ClusterMetric) -> ClusterDbscanParams
+    todo("cluster-nv.clusterdbscan.params")
+
+// Whether these parameters describe a density at all, and which field
+// is wrong if they do not.
+//
+// `ClusterBadEpsilon` for a radius that is not positive and
+// `ClusterBadMinPoints` for a count below 1.  Both are configuration
+// mistakes rather than data mistakes, and finding them where the
+// configuration is read is worth more than finding them as a fit that
+// labels everything noise.
+//
+// ```novo
+// use clusterdbscan
+//
+// fn main() [io]
+//     match clusterdbscan.check(clusterdbscan.params(0.0, 4, ClusterEuclidean))
+//         Some(e) => println(e.message())
+//         None    => println("usable")
+// ```
+pub fn check(p: ClusterDbscanParams) -> ?ClusterFault
+    todo("cluster-nv.clusterdbscan.check")
+
+// Cluster `data` by density.
+//
+// `data` is `[n_samples, n_features]`.  Clusters are numbered from 0
+// in the order they were discovered, scanning the samples in row
+// order, and a sample in no cluster carries
+// `clusterlabels.noise_label()`.  The status is always
+// `ClusterConverged`: DBSCAN is one pass, not an iteration, and there
+// is no budget to exhaust.
+//
+// ```novo
+// use clusterdbscan
+// use clusterlabels
+// use ndfloat
+//
+// fn main() [io]
+//     match ndfloat.of_list([0.0, 0.1, 5.0], [3, 1])
+//         Err(e) => println(e.message())
+//         Ok(data) =>
+//             match clusterdbscan.fit(data, clusterdbscan.params(0.5, 2, ClusterEuclidean))
+//                 Ok(l)  => println("${clusterlabels.noise_count(l)}")   // 1
+//                 Err(e) => println(e.message())
+// ```
+pub fn fit(data: NdFloat, p: ClusterDbscanParams) -> Result<ClusterLabels, ClusterFault>
+    todo("cluster-nv.clusterdbscan.fit")
+
+// The samples within `epsilon` of this one, itself included, in
+// increasing index order.
+//
+// The inner query the algorithm is built out of, public because it is
+// what a caller uses to choose `epsilon` in the first place: the
+// distance at which the neighbour counts stop growing slowly and start
+// growing fast is the radius the data is asking for.
+//
+// ```novo
+// use clusterdbscan
+// use ndfloat
+//
+// fn main() [io]
+//     match ndfloat.of_list([0.0, 0.1, 5.0], [3, 1])
+//         Err(e) => println(e.message())
+//         Ok(data) =>
+//             match clusterdbscan.neighbours(data, 0, clusterdbscan.params(0.5, 2, ClusterEuclidean))
+//                 Ok(n)  => println("${n}")   // [0, 1]
+//                 Err(e) => println(e.message())
+// ```
+pub fn neighbours(data: NdFloat, sample: Int, p: ClusterDbscanParams) -> Result<[Int], ClusterFault>
+    todo("cluster-nv.clusterdbscan.neighbours")
+
+// Whether this sample is a core point: whether at least `min_points`
+// samples lie within `epsilon` of it.
+//
+// The distinction that decides everything else, exposed because a
+// caller reading a clustering needs it — a border point and a core
+// point carry the same label and mean different things about how
+// solidly the sample belongs.
+//
+// ```novo
+// use clusterdbscan
+// use ndfloat
+//
+// fn main() [io]
+//     match ndfloat.of_list([0.0, 0.1, 5.0], [3, 1])
+//         Err(e) => println(e.message())
+//         Ok(data) =>
+//             match clusterdbscan.is_core_point(data, 2, clusterdbscan.params(0.5, 2, ClusterEuclidean))
+//                 Ok(b)  => println("${b}")   // false
+//                 Err(e) => println(e.message())
+// ```
+pub fn is_core_point(data: NdFloat, sample: Int,
+                     p: ClusterDbscanParams) -> Result<Bool, ClusterFault>
+    todo("cluster-nv.clusterdbscan.is_core_point")
+
+// The distance from every sample to its `k`th nearest neighbour,
+// sorted from largest to smallest.
+//
+// The k-distance plot of the original paper, and the tool for choosing
+// `epsilon`: plotted, it has a knee, and the distance at the knee is
+// the radius that separates the dense regions from the sparse ones.
+// It is here because choosing `epsilon` by guessing is the single
+// biggest reason a DBSCAN run disappoints, and because the caller
+// cannot compute it without reimplementing the distance the fit will
+// use.
+//
+// ```novo
+// use clusterdbscan
+// use ndfloat
+//
+// fn main() [io]
+//     match ndfloat.of_list([0.0, 0.1, 5.0], [3, 1])
+//         Err(e) => println(e.message())
+//         Ok(data) =>
+//             match clusterdbscan.k_distances(data, 1, ClusterEuclidean)
+//                 Ok(d)  => println("${list.len(d)}")   // 3
+//                 Err(e) => println(e.message())
+// ```
+pub fn k_distances(data: NdFloat, k: Int, metric: ClusterMetric) -> Result<[Float], ClusterFault>
+    todo("cluster-nv.clusterdbscan.k_distances")

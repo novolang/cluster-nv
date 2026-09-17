@@ -1,0 +1,274 @@
+// clusteragglomerative.nv — building the tree, and cutting it
+// afterwards.
+//
+// WHAT AGGLOMERATIVE CLUSTERING IS.  Start with every sample its own
+// cluster.  Repeatedly merge the two closest clusters, recording each
+// merge and the distance it happened at, until one cluster is left.
+// The record of those `n - 1` merges is a DENDROGRAM — a binary tree
+// whose leaves are the samples and whose internal nodes are merges,
+// each at a height equal to the distance between what it joined.
+//
+// THE TREE IS BUILT ONCE AND CUT MANY TIMES.  That is the property
+// that makes this method worth its cost, and it is why the surface
+// here is two functions rather than one.  `build` does the expensive
+// part and knows nothing about how many clusters anyone wants;
+// `cut_at_count` and `cut_at_distance` are cheap and can be called
+// again and again on the same tree.  A caller exploring how many
+// clusters its data has builds once and cuts twenty times, which no
+// interface that took `k` as an argument to the fit would let it do.
+//
+// WHAT A LINKAGE IS.  Two clusters have many pairs of points between
+// them, so "the distance between two clusters" needs a definition, and
+// there are three in common use.  SINGLE linkage takes the smallest
+// distance between any pair, which follows filaments and chains — it
+// finds long straggly shapes and it also joins two dense blobs through
+// one bridge of outliers.  COMPLETE linkage takes the largest, which
+// produces compact clusters of roughly equal diameter and breaks up
+// elongated ones.  AVERAGE linkage takes the mean over all pairs and
+// sits between the two.  The choice is not a tuning knob; it is a
+// statement about what shape the caller thinks its clusters are, and
+// the three give genuinely different trees on the same data.
+//
+// THE MERGE ORDER IS DETERMINISTIC.  Two pairs of clusters can be
+// exactly the same distance apart, and the original formulations do
+// not say which to merge.  This package merges the pair with the
+// smallest first index, and then the smallest second — so the same
+// data gives the same tree, every time.  That is the same
+// reproducibility promise the other two modules make, and it costs
+// nothing to keep.
+
+// How the distance between two CLUSTERS is defined, given the
+// distances between their points.
+//
+// ```novo
+// use clusteragglomerative
+//
+// fn main() [io]
+//     println(clusteragglomerative.linkage_name(ClusterAverage))   // average
+// ```
+pub enum ClusterLinkage
+    // The smallest distance between any point of one cluster and any
+    // point of the other.  Follows chains and filaments, and joins two
+    // dense groups through a single bridge of outliers.
+    ClusterSingle
+    // The largest such distance.  Produces compact clusters of
+    // similar diameter, and breaks elongated shapes into pieces.
+    ClusterComplete
+    // The mean over every pair of points, one from each cluster.
+    // Between the other two, and the usual first choice.
+    ClusterAverage
+
+// One merge: which two clusters joined, how far apart they were, and
+// how big the result is.
+//
+// ```novo
+// use clusteragglomerative
+//
+// fn main() [io]
+//     let m = ClusterMerge { left: 0, right: 1, distance: 0.5, size: 2 }
+//     println("${m.size}")   // 2
+// ```
+pub struct ClusterMerge
+    // The lower-numbered of the two clusters that joined.  A number
+    // below the sample count is a leaf — that sample's own cluster;
+    // `sample_count + i` is the cluster that merge `i` produced.
+    left: Int
+    // The higher-numbered of the two, read the same way.
+    right: Int
+    // How far apart they were, under the tree's linkage and metric.
+    // The height of this node, and the number `cut_at_distance`
+    // compares against.  It never decreases down the list for complete
+    // and average linkage; for single linkage it never decreases
+    // either, which is what makes a cut at a height well defined.
+    distance: Float
+    // How many samples are in the cluster this merge produced.
+    size: Int
+
+// The whole merge history of one data set.
+//
+// ```novo
+// use clusteragglomerative
+// use ndfloat
+//
+// fn main() [io]
+//     match ndfloat.of_list([0.0, 1.0, 10.0], [3, 1])
+//         Err(e) => println(e.message())
+//         Ok(data) =>
+//             match clusteragglomerative.build(data, ClusterAverage, ClusterEuclidean)
+//                 Ok(d)  => println("${d.sample_count}")   // 3
+//                 Err(e) => println(e.message())
+// ```
+pub struct ClusterDendrogram
+    // The `n - 1` merges, in the order they happened, so their
+    // distances are non-decreasing.
+    merges: [ClusterMerge]
+    // How many samples the tree was built from.  Its leaves are
+    // numbered 0 to `sample_count - 1`.
+    sample_count: Int
+
+// The linkage's name, for a log line and a fault message:
+// `"single"`, `"complete"`, `"average"`.
+//
+// ```novo
+// use clusteragglomerative
+//
+// fn main() [io]
+//     println(clusteragglomerative.linkage_name(ClusterSingle))   // single
+// ```
+pub fn linkage_name(linkage: ClusterLinkage) -> Str
+    todo("cluster-nv.clusteragglomerative.linkage_name")
+
+// The linkage a name denotes, or `None`.
+//
+// For reading a linkage out of configuration.  A spelling this package
+// does not use answers `None` rather than a default: the three give
+// genuinely different trees, so quietly choosing one is quietly
+// choosing an answer.
+//
+// ```novo
+// use clusteragglomerative
+//
+// fn main() [io]
+//     match clusteragglomerative.linkage_named("complete")
+//         Some(l) => println(clusteragglomerative.linkage_name(l))   // complete
+//         None    => println("no such linkage")
+// ```
+pub fn linkage_named(name: Str) -> ?ClusterLinkage
+    todo("cluster-nv.clusteragglomerative.linkage_named")
+
+// Build the merge tree for `data`.
+//
+// `data` is `[n_samples, n_features]`.  The expensive call, and the
+// one to make once: every cut below works on the tree this returns and
+// costs a single pass over the merges.
+//
+// All four metrics are defined, unlike in k-means: this method never
+// takes a mean, it only ever compares distances between points.
+//
+// ```novo
+// use clusteragglomerative
+// use ndfloat
+//
+// fn main() [io]
+//     match ndfloat.of_list([0.0, 1.0, 10.0, 11.0], [4, 1])
+//         Err(e) => println(e.message())
+//         Ok(data) =>
+//             match clusteragglomerative.build(data, ClusterComplete, ClusterEuclidean)
+//                 Ok(d)  => println("${list.len(d.merges)}")   // 3
+//                 Err(e) => println(e.message())
+// ```
+pub fn build(data: NdFloat, linkage: ClusterLinkage,
+             metric: ClusterMetric) -> Result<ClusterDendrogram, ClusterFault>
+    todo("cluster-nv.clusteragglomerative.build")
+
+// Cut the tree so that exactly `count` clusters remain.
+//
+// Undoes the last `count - 1` merges.  `ClusterBadCut` when `count` is
+// below 1 or above the sample count, because neither names a
+// partition.  Every sample is assigned, so the labels' `noise_count`
+// is 0.
+//
+// This is the cut to use when the number of clusters is known from
+// outside the data — a fixed number of bins, a known number of
+// categories.
+//
+// ```novo
+// use clusteragglomerative
+// use clusterlabels
+// use ndfloat
+//
+// fn main() [io]
+//     match ndfloat.of_list([0.0, 1.0, 10.0, 11.0], [4, 1])
+//         Err(e) => println(e.message())
+//         Ok(data) =>
+//             match clusteragglomerative.build(data, ClusterAverage, ClusterEuclidean)
+//                 Err(e) => println(e.message())
+//                 Ok(d)  =>
+//                     match clusteragglomerative.cut_at_count(d, 2)
+//                         Ok(l)  => println("${clusterlabels.labels_of(l)}")   // [0, 0, 1, 1]
+//                         Err(e) => println(e.message())
+// ```
+pub fn cut_at_count(tree: ClusterDendrogram, count: Int) -> Result<ClusterLabels, ClusterFault>
+    todo("cluster-nv.clusteragglomerative.cut_at_count")
+
+// Cut the tree below every merge that happened at or above
+// `threshold`.
+//
+// Keeps the merges whose distance is strictly below the threshold and
+// discards the rest, so the number of clusters is whatever the data
+// gives.  `ClusterBadCut` for a negative threshold.
+//
+// This is the cut to use when the number of clusters is NOT known and
+// a meaningful distance is — "customers within five kilometres of each
+// other are one territory".  It is also what makes the tree worth
+// building: the same tree answers that question at every threshold.
+//
+// ```novo
+// use clusteragglomerative
+// use clusterlabels
+// use ndfloat
+//
+// fn main() [io]
+//     match ndfloat.of_list([0.0, 1.0, 10.0, 11.0], [4, 1])
+//         Err(e) => println(e.message())
+//         Ok(data) =>
+//             match clusteragglomerative.build(data, ClusterAverage, ClusterEuclidean)
+//                 Err(e) => println(e.message())
+//                 Ok(d)  =>
+//                     match clusteragglomerative.cut_at_distance(d, 5.0)
+//                         Ok(l)  => println("${clusterlabels.cluster_count(l)}")   // 2
+//                         Err(e) => println(e.message())
+// ```
+pub fn cut_at_distance(tree: ClusterDendrogram,
+                       threshold: Float) -> Result<ClusterLabels, ClusterFault>
+    todo("cluster-nv.clusteragglomerative.cut_at_distance")
+
+// The heights of the merges, in the order they happened.
+//
+// The dendrogram's y-axis, as numbers.  A caller choosing a threshold
+// looks for the largest gap between consecutive heights: merging two
+// things that are far apart, after a run of merges of things that were
+// close, is the tree saying where the natural division is.
+//
+// ```novo
+// use clusteragglomerative
+// use ndfloat
+//
+// fn main() [io]
+//     match ndfloat.of_list([0.0, 1.0, 10.0, 11.0], [4, 1])
+//         Err(e) => println(e.message())
+//         Ok(data) =>
+//             match clusteragglomerative.build(data, ClusterAverage, ClusterEuclidean)
+//                 Err(e) => println(e.message())
+//                 Ok(d)  => println("${list.len(clusteragglomerative.merge_heights(d))}")   // 3
+// ```
+pub fn merge_heights(tree: ClusterDendrogram) -> [Float]
+    todo("cluster-nv.clusteragglomerative.merge_heights")
+
+// The cluster each sample is in at one step of the build, numbered
+// from 0.
+//
+// `step` is how many merges have happened: 0 is every sample its own
+// cluster, `sample_count - 1` is one cluster holding everything.  It
+// is what `cut_at_count` is written in terms of, and it is public
+// because an animation, a diagnostic or a test of the tree wants the
+// state at a named step rather than at a named cluster count.
+//
+// ```novo
+// use clusteragglomerative
+// use clusterlabels
+// use ndfloat
+//
+// fn main() [io]
+//     match ndfloat.of_list([0.0, 1.0, 10.0, 11.0], [4, 1])
+//         Err(e) => println(e.message())
+//         Ok(data) =>
+//             match clusteragglomerative.build(data, ClusterAverage, ClusterEuclidean)
+//                 Err(e) => println(e.message())
+//                 Ok(d)  =>
+//                     match clusteragglomerative.labels_at_step(d, 0)
+//                         Ok(l)  => println("${clusterlabels.cluster_count(l)}")   // 4
+//                         Err(e) => println(e.message())
+// ```
+pub fn labels_at_step(tree: ClusterDendrogram, step: Int) -> Result<ClusterLabels, ClusterFault>
+    todo("cluster-nv.clusteragglomerative.labels_at_step")

@@ -1,0 +1,135 @@
+// clusterlabels_tests.nv — a label is a cluster number, and noise is
+// not a cluster.
+//
+// RED ON PURPOSE: every assertion reaches `not implemented:
+// cluster-nv.clusterlabels.<fn>`.  What is asserted is the rule that
+// makes the noise label safe — `cluster_count` never counts it,
+// `sizes` never includes it, and `members_of` refuses to hand back its
+// members — and the four distances, whose values on a 3-4-5 triangle
+// are exact.
+
+use std.test
+use clusterlabels
+
+fn two_clusters() -> ClusterLabels
+    ClusterLabels { assignment: [0, 0, 1, 1], cluster_count: 2, noise_count: 0 }
+
+fn with_noise() -> ClusterLabels
+    ClusterLabels { assignment: [0, 0, -1, 1], cluster_count: 2, noise_count: 1 }
+
+@test
+fn test_the_noise_label_is_a_named_thing_and_not_minus_one_by_accident() [io]
+    // Scikit-learn writes noise as -1, and programs that count
+    // clusters by taking the maximum label plus one, or that index a
+    // per-cluster array with the label, get it wrong.  These four
+    // functions are what stop that.
+    test.case("it is negative, so it can never collide with a cluster number")
+    test.assert(clusterlabels.noise_label() < 0)
+
+    test.case("is_noise is the test to write instead of comparing against a number")
+    match clusterlabels.is_noise(with_noise(), 2)
+        Err(e) => test.fail(e.message())
+        Ok(b)  => test.assert(b)
+    match clusterlabels.is_noise(with_noise(), 0)
+        Err(e) => test.fail(e.message())
+        Ok(b)  => test.assert(not b)
+
+    test.case("cluster_count does not count the noise")
+    test.assert(clusterlabels.cluster_count(with_noise()) == 2)
+
+    test.case("noise_count does, and the two agree with the assignment")
+    test.assert(clusterlabels.noise_count(with_noise()) == 1)
+    test.assert(clusterlabels.noise_count(two_clusters()) == 0)
+
+    test.case("sizes has one entry per cluster and none for the noise")
+    test.assert(clusterlabels.sizes(with_noise()) == [2, 1])
+    test.assert(clusterlabels.sizes(two_clusters()) == [2, 2])
+
+@test
+fn test_reading_one_sample_and_one_cluster() [io]
+    test.case("labels_of gives the raw list in the data's row order")
+    test.assert(clusterlabels.labels_of(two_clusters()) == [0, 0, 1, 1])
+
+    test.case("label_at gives one of them")
+    match clusterlabels.label_at(two_clusters(), 3)
+        Err(e) => test.fail(e.message())
+        Ok(c)  => test.assert(c == 1)
+
+    test.case("and a sample that is not one is refused rather than defaulted")
+    match clusterlabels.label_at(two_clusters(), 4)
+        Ok(_)  => test.fail("there is no sample 4 in a four-sample clustering")
+        Err(_) => test.assert(true)
+
+    test.case("members_of gives the sample indices, in increasing order")
+    match clusterlabels.members_of(two_clusters(), 1)
+        Err(e) => test.fail(e.message())
+        Ok(m)  => test.assert(m == [2, 3])
+
+    test.case("asking for the noise's members is refused — the noise is not a cluster")
+    match clusterlabels.members_of(with_noise(), clusterlabels.noise_label())
+        Ok(_)  => test.fail("a function that answered this would invite treating noise as a cluster")
+        Err(_) => test.assert(true)
+
+@test
+fn test_the_four_distances_on_a_three_four_five_triangle() [io]
+    // Chosen because every one of the four answers is exact in binary
+    // floating point, so the assertions need no tolerance argument.
+    let origin = [0.0, 0.0]
+    let corner = [3.0, 4.0]
+
+    test.case("euclidean: the hypotenuse")
+    match clusterlabels.distance(ClusterEuclidean, origin, corner)
+        Err(e) => test.fail(e.message())
+        Ok(d)  => test.assert(d == 5.0)
+
+    test.case("squared euclidean: the same without the root")
+    match clusterlabels.distance(ClusterSquaredEuclidean, origin, corner)
+        Err(e) => test.fail(e.message())
+        Ok(d)  => test.assert(d == 25.0)
+
+    test.case("manhattan: the two legs added")
+    match clusterlabels.distance(ClusterManhattan, origin, corner)
+        Err(e) => test.fail(e.message())
+        Ok(d)  => test.assert(d == 7.0)
+
+    test.case("chebyshev: the longer leg alone")
+    match clusterlabels.distance(ClusterChebyshev, origin, corner)
+        Err(e) => test.fail(e.message())
+        Ok(d)  => test.assert(d == 4.0)
+
+    test.case("and two points of different lengths are not two points in one space")
+    match clusterlabels.distance(ClusterEuclidean, [0.0], [1.0, 2.0])
+        Ok(_)  => test.fail("a one-dimensional point and a two-dimensional one have no distance")
+        Err(_) => test.assert(true)
+
+@test
+fn test_a_metric_round_trips_through_its_name_and_an_unknown_one_is_none() [io]
+    // Silently clustering under the Euclidean distance when the
+    // operator asked for Manhattan is a wrong answer that looks right.
+    test.case("the four names")
+    test.assert_eq_str(clusterlabels.metric_name(ClusterEuclidean), "euclidean")
+    test.assert_eq_str(clusterlabels.metric_name(ClusterSquaredEuclidean), "squared euclidean")
+    test.assert_eq_str(clusterlabels.metric_name(ClusterManhattan), "manhattan")
+    test.assert_eq_str(clusterlabels.metric_name(ClusterChebyshev), "chebyshev")
+
+    test.case("and each reads back")
+    match clusterlabels.metric_named("manhattan")
+        None    => test.fail("manhattan is one of the four")
+        Some(m) => test.assert_eq_str(clusterlabels.metric_name(m), "manhattan")
+
+    test.case("a spelling this package does not use is None, not a default")
+    test.assert_none(clusterlabels.metric_named("cosine"))
+
+@test
+fn test_the_status_separates_a_fixed_point_from_a_budget_that_ran_out() [io]
+    // A caller that gets back only labels cannot tell a converged fit
+    // from one that would still be moving points.
+    test.case("each arm has its own name")
+    test.assert_eq_str(clusterlabels.status_name(ClusterConverged), "converged")
+    test.assert_eq_str(clusterlabels.status_name(ClusterBudgetExhausted), "budget exhausted")
+    test.assert_eq_str(clusterlabels.status_name(ClusterDegenerate("empty cluster")), "degenerate: empty cluster")
+
+    test.case("converged is true for one arm and false for the other two")
+    test.assert(clusterlabels.converged(ClusterConverged))
+    test.assert(not clusterlabels.converged(ClusterBudgetExhausted))
+    test.assert(not clusterlabels.converged(ClusterDegenerate("empty cluster")))
