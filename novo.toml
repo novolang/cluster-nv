@@ -1,6 +1,6 @@
 [package]
 name        = "cluster-nv"
-version     = "0.0.1"
+version     = "0.0.2"
 description = "Unsupervised clustering over ndarray-nv matrices: k-means with k-means++ seeding whose random draws the caller supplies, DBSCAN with its noise a named thing rather than a negative label, and agglomerative clustering whose tree is built once and cut as many times as a caller likes."
 license     = "Apache-2.0"
 
@@ -53,4 +53,4 @@ novo        = ">= 0.9.0"
 # interface — every one of its bodies is a `todo()` — so nothing here
 # can be implemented before it is.  The README's Status section says
 # so rather than leaving it to be discovered.
-ndarray-nv = "^0.0.1"
+ndarray-nv = "^0.1.4"
