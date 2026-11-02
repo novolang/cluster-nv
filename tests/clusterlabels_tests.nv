@@ -1,12 +1,10 @@
 // clusterlabels_tests.nv — a label is a cluster number, and noise is
 // not a cluster.
 //
-// RED ON PURPOSE: every assertion reaches `not implemented:
-// cluster-nv.clusterlabels.<fn>`.  What is asserted is the rule that
-// makes the noise label safe — `cluster_count` never counts it,
-// `sizes` never includes it, and `members_of` refuses to hand back its
-// members — and the four distances, whose values on a 3-4-5 triangle
-// are exact.
+// What is asserted is the rule that makes the noise label safe —
+// `cluster_count` never counts it, `sizes` never includes it, and
+// `members_of` refuses to hand back its members — and the four
+// distances, whose values on a 3-4-5 triangle are exact.
 
 use std.test
 use clusterlabels

@@ -1,12 +1,11 @@
 // clusterfault_tests.nv — a refusal names the argument, and prints
 // both sides.
 //
-// RED ON PURPOSE: every assertion reaches `not implemented:
-// cluster-nv.ClusterFault.message`.  What is asserted is the one rule
-// the `Error` implementation has to follow: every variant prints what
-// it compared, so a reader never goes back to the call to find out
-// what the other side was — and `ClusterArrayFault` delegates, so
-// ndarray-nv's own shapes survive into our message.
+// What is asserted is the one rule the `Error` implementation has to
+// follow: every variant prints what it compared, so a reader never
+// goes back to the call to find out what the other side was — and
+// `ClusterArrayFault` delegates, so ndarray-nv's own shapes survive
+// into our message.
 
 use std.test
 

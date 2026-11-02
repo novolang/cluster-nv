@@ -1,0 +1,333 @@
+// cluster_edge_tests.nv — the shape guards every entry point opens
+// with, the arguments that are refusals, and the fits that degenerate.
+//
+// The five suites assert what each algorithm computes on a small
+// fixture.  This file asserts what each one refuses, and it walks the
+// arms a fixture of four points does not reach: the metrics outside the
+// Euclidean one, the queries DBSCAN answers about a neighbourhood, and
+// one merge history whose second merge joins a leaf to an earlier
+// merge's cluster.
+
+use std.test
+use clusteragglomerative
+use clusterdbscan
+use clusterkmeans
+use clusterlabels
+use ndfloat
+
+// A rank-1 array: measurements with no sample axis.
+fn a_line() -> NdFloat
+    match ndfloat.of_list([1.0, 2.0], [2])
+        Ok(a)  => a
+        Err(_) => ndfloat.scalar(0.0)
+
+// A rank-2 array with no rows.
+fn no_rows() -> NdFloat
+    match ndfloat.of_list([], [0, 2])
+        Ok(a)  => a
+        Err(_) => ndfloat.scalar(0.0)
+
+// Four points on a line, the fixture the other suites use.
+fn four_points() -> NdFloat
+    match ndfloat.of_list([0.0, 1.0, 10.0, 11.0], [4, 1])
+        Ok(a)  => a
+        Err(_) => ndfloat.scalar(0.0)
+
+// Two points a 3-4-5 step apart, where all four metrics are exact.
+fn triangle() -> NdFloat
+    match ndfloat.of_list([0.0, 0.0, 3.0, 4.0], [2, 2])
+        Ok(a)  => a
+        Err(_) => ndfloat.scalar(0.0)
+
+// A [1, 1] centroid set: one cluster, one feature.
+fn one_centroid() -> NdFloat
+    match ndfloat.zeros([1, 1])
+        Ok(a)  => a
+        Err(_) => ndfloat.scalar(0.0)
+
+// A [2, 2] centroid set, one feature too wide for the data.
+fn wide_centroids() -> NdFloat
+    match ndfloat.zeros([2, 2])
+        Ok(a)  => a
+        Err(_) => ndfloat.scalar(0.0)
+
+// Two centroids on the line, at the two pairs the fixture has.
+fn pair_centroids() -> NdFloat
+    match ndfloat.of_list([0.0, 10.0], [2, 1])
+        Ok(a)  => a
+        Err(_) => ndfloat.scalar(0.0)
+
+// A [0, 1] centroid set: rank 2, with no cluster in it.
+fn no_centroids() -> NdFloat
+    match ndfloat.zeros([0, 1])
+        Ok(a)  => a
+        Err(_) => ndfloat.scalar(0.0)
+
+// Two labels where four samples were labelled.
+fn short_labels() -> ClusterLabels
+    ClusterLabels { assignment: [0, 1], cluster_count: 2, noise_count: 0 }
+
+// Four labels for four samples, and no cluster to hold any of them.
+fn no_clusters() -> ClusterLabels
+    ClusterLabels { assignment: [0, 0, 0, 0], cluster_count: 0, noise_count: 0 }
+
+// Four labels, one of them off the end of a three-cluster labelling.
+fn stray_label() -> ClusterLabels
+    ClusterLabels { assignment: [0, 0, 5, 1], cluster_count: 3, noise_count: 0 }
+
+// Two clusters and one sample in neither of them.
+fn with_noise() -> ClusterLabels
+    ClusterLabels { assignment: [0, 0, -1, 1], cluster_count: 2, noise_count: 1 }
+
+@test
+fn test_every_metric_name_reads_back_and_an_unknown_one_is_none() [io]
+    // The labels suite reads manhattan back; the other three are the
+    // three a configuration file can name and get no answer for.
+    test.case("euclidean")
+    match clusterlabels.metric_named("euclidean")
+        None    => test.fail("euclidean is one of the four")
+        Some(m) => test.assert_eq_str(clusterlabels.metric_name(m), "euclidean")
+
+    test.case("squared euclidean")
+    match clusterlabels.metric_named("squared euclidean")
+        None    => test.fail("squared euclidean is one of the four")
+        Some(m) => test.assert_eq_str(clusterlabels.metric_name(m), "squared euclidean")
+
+    test.case("chebyshev")
+    match clusterlabels.metric_named("chebyshev")
+        None    => test.fail("chebyshev is one of the four")
+        Some(m) => test.assert_eq_str(clusterlabels.metric_name(m), "chebyshev")
+
+    test.case("an empty name is None rather than the first case")
+    test.assert_none(clusterlabels.metric_named(""))
+
+@test
+fn test_the_kmeans_guards_refuse_a_rank_a_k_and_a_labelling() [io]
+    test.case("a rank-1 array is not a matrix, and the fault carries the rank")
+    match clusterkmeans.seed_plus_plus(a_line(), 1, [0.0])
+        Ok(_)  => test.fail("a rank-1 array is not [n_samples, n_features]")
+        Err(e) => test.assert_eq_str(e.message(), "the data is rank 1, not [n_samples, n_features]")
+
+    test.case("zero rows is its own fault, not a rank problem")
+    match clusterkmeans.assign(no_rows(), one_centroid())
+        Ok(_)  => test.fail("an empty matrix has nothing to assign")
+        Err(e) => test.assert_eq_str(e.message(), "the data has no rows to cluster")
+
+    test.case("fit refuses a centroid set that is not rank 2")
+    match clusterkmeans.fit(four_points(), a_line(), 10, 0.000001)
+        Ok(_)  => test.fail("a rank-1 centroid set is not [k, n_features]")
+        Err(e) => test.assert_eq_str(e.message(), "the data is rank 1, not [n_samples, n_features]")
+
+    test.case("fit refuses a k below one")
+    match clusterkmeans.fit(four_points(), no_centroids(), 10, 0.000001)
+        Ok(_)  => test.fail("zero centroids divides nothing")
+        Err(e) => test.assert_eq_str(e.message(), "a k of 0 over 4 sample(s)")
+
+    test.case("assign refuses the same two")
+    match clusterkmeans.assign(four_points(), a_line())
+        Ok(_)  => test.fail("a rank-1 centroid set is not [k, n_features]")
+        Err(_) => test.assert(true)
+    match clusterkmeans.assign(four_points(), no_centroids())
+        Ok(_)  => test.fail("zero centroids divides nothing")
+        Err(_) => test.assert(true)
+
+    test.case("assign refuses a centroid set of a different width")
+    match clusterkmeans.assign(four_points(), wide_centroids())
+        Ok(_)  => test.fail("a [2, 2] centroid set does not fit [4, 1] data")
+        Err(e) => test.assert_eq_str(e.message(), "centroids of [2, 1], not [2, 2]")
+
+    test.case("inertia refuses the same shapes, and a labelling of the wrong length")
+    match clusterkmeans.inertia(four_points(), a_line(), short_labels())
+        Ok(_)  => test.fail("a rank-1 centroid set is not [k, n_features]")
+        Err(_) => test.assert(true)
+    match clusterkmeans.inertia(four_points(), no_centroids(), short_labels())
+        Ok(_)  => test.fail("zero centroids scores nothing")
+        Err(_) => test.assert(true)
+    match clusterkmeans.inertia(four_points(), wide_centroids(), short_labels())
+        Ok(_)  => test.fail("a [2, 2] centroid set does not fit [4, 1] data")
+        Err(_) => test.assert(true)
+    match clusterkmeans.inertia(four_points(), one_centroid(), short_labels())
+        Ok(_)  => test.fail("two labels do not label four samples")
+        Err(e) => test.assert_eq_str(e.message(),
+                                     "a labelling of 2 label(s) over 4 sample(s) names no partition")
+
+    test.case("inertia refuses a label off the end of the centroids")
+    match clusterkmeans.inertia(four_points(), pair_centroids(), stray_label())
+        Ok(_)  => test.fail("there is no centroid 5")
+        Err(_) => test.assert(true)
+
+    test.case("inertia skips the noise label rather than scoring it")
+    match clusterkmeans.inertia(four_points(), pair_centroids(), with_noise())
+        Ok(v)  => test.assert_approx(v, 2.0, 0.0000001)
+        Err(e) => test.fail(e.message())
+
+    test.case("predict refuses a rank-1 centroid set and a k below one")
+    match clusterkmeans.predict(a_line(), [1.0])
+        Ok(_)  => test.fail("a rank-1 centroid set is not [k, n_features]")
+        Err(_) => test.assert(true)
+    match clusterkmeans.predict(no_centroids(), [1.0])
+        Ok(_)  => test.fail("zero centroids answers nothing")
+        Err(e) => test.assert_eq_str(e.message(), "a k of 0 over 1 sample(s)")
+
+    test.case("centroids_of refuses the same labellings")
+    match clusterkmeans.centroids_of(four_points(), short_labels())
+        Ok(_)  => test.fail("two labels do not label four samples")
+        Err(_) => test.assert(true)
+    match clusterkmeans.centroids_of(four_points(), no_clusters())
+        Ok(_)  => test.fail("no cluster has no mean")
+        Err(e) => test.assert_eq_str(e.message(), "a k of 0 over 4 sample(s)")
+    match clusterkmeans.centroids_of(four_points(), stray_label())
+        Ok(_)  => test.fail("there is no cluster 5")
+        Err(_) => test.assert(true)
+
+@test
+fn test_a_fit_whose_centroid_attracts_nothing_degenerates() [io]
+    // Two centroids on one point: every sample goes to the lower-numbered
+    // one, the other has no members, and the status says so rather than
+    // returning labels that read like a fit.
+    match ndfloat.of_list([0.0, 0.0], [2, 1])
+        Err(e)    => test.fail(e.message())
+        Ok(start) =>
+            match clusterkmeans.fit(four_points(), start, 100, 0.000001)
+                Err(e) => test.fail(e.message())
+                Ok(m)  =>
+                    test.case("the empty cluster is named rather than hidden")
+                    test.assert_eq_str(clusterlabels.status_name(m.status),
+                                       "degenerate: an empty cluster after an assignment")
+                    test.case("and a degenerate fit is not a converged one")
+                    test.assert(not clusterlabels.converged(m.status))
+                    test.case("the second cluster has no members")
+                    test.assert(clusterlabels.sizes(m.labels) == [4, 0])
+
+@test
+fn test_the_dbscan_guards_refuse_a_rank_a_radius_a_minimum_and_an_index() [io]
+    test.case("a rank-1 array is not a matrix")
+    match clusterdbscan.fit(a_line(), clusterdbscan.params(0.5, 2, ClusterEuclidean))
+        Ok(_)  => test.fail("a rank-1 array is not [n_samples, n_features]")
+        Err(e) => test.assert_eq_str(e.message(), "the data is rank 1, not [n_samples, n_features]")
+
+    test.case("zero rows is its own fault")
+    match clusterdbscan.k_distances(no_rows(), 1, ClusterEuclidean)
+        Ok(_)  => test.fail("an empty matrix has no distances")
+        Err(e) => test.assert_eq_str(e.message(), "the data has no rows to cluster")
+
+    test.case("the parameter block is checked before the query runs")
+    match clusterdbscan.neighbours(four_points(), 0, clusterdbscan.params(0.0, 2, ClusterEuclidean))
+        Ok(_)  => test.fail("a radius of zero makes every sample its own neighbourhood")
+        Err(e) => test.assert(str.contains(e.message(), "epsilon"))
+    match clusterdbscan.is_core_point(four_points(), 0, clusterdbscan.params(0.5, 0, ClusterEuclidean))
+        Ok(_)  => test.fail("a core point contains at least itself")
+        Err(e) => test.assert(str.contains(e.message(), "min_points"))
+
+    test.case("a sample that is not one is refused rather than defaulted")
+    match clusterdbscan.neighbours(four_points(), 9, clusterdbscan.params(0.5, 2, ClusterEuclidean))
+        Ok(_)  => test.fail("there is no sample 9 in four samples")
+        Err(e) => test.assert_eq_str(e.message(), "index 9 is off the end of 4")
+
+    test.case("and the k of a k-distance plot is below the sample count")
+    match clusterdbscan.k_distances(four_points(), 0, ClusterEuclidean)
+        Ok(_)  => test.fail("a 0th nearest neighbour is not a distance")
+        Err(e) => test.assert_eq_str(e.message(), "a k of 0 over 4 sample(s)")
+    match clusterdbscan.k_distances(four_points(), 4, ClusterEuclidean)
+        Ok(_)  => test.fail("the fourth nearest of four samples is itself")
+        Err(e) => test.assert_eq_str(e.message(), "a k of 4 over 4 sample(s)")
+
+@test
+fn test_the_dbscan_queries_answer_under_every_metric() [io]
+    // All four metrics are defined here, unlike in k-means, because
+    // DBSCAN never takes a mean: it only asks whether two points are
+    // within epsilon of each other.
+    test.case("euclidean: the hypotenuse")
+    match clusterdbscan.k_distances(triangle(), 1, ClusterEuclidean)
+        Err(e) => test.fail(e.message())
+        Ok(d)  => test.assert_approx(d[0], 5.0, 0.0000001)
+
+    test.case("squared euclidean: the same without the root")
+    match clusterdbscan.k_distances(triangle(), 1, ClusterSquaredEuclidean)
+        Err(e) => test.fail(e.message())
+        Ok(d)  => test.assert_approx(d[0], 25.0, 0.0000001)
+
+    test.case("manhattan: the two legs added")
+    match clusterdbscan.k_distances(triangle(), 1, ClusterManhattan)
+        Err(e) => test.fail(e.message())
+        Ok(d)  => test.assert_approx(d[0], 7.0, 0.0000001)
+
+    test.case("chebyshev: the longer leg alone")
+    match clusterdbscan.k_distances(triangle(), 1, ClusterChebyshev)
+        Err(e) => test.fail(e.message())
+        Ok(d)  => test.assert_approx(d[0], 4.0, 0.0000001)
+
+    test.case("the neighbourhood query counts the point itself, in index order")
+    match clusterdbscan.neighbours(triangle(), 0, clusterdbscan.params(5.0, 2, ClusterEuclidean))
+        Err(e) => test.fail(e.message())
+        Ok(n)  => test.assert(n == [0, 1])
+
+    test.case("and a point with one neighbour inside the radius is a core point")
+    match clusterdbscan.is_core_point(triangle(), 0, clusterdbscan.params(5.0, 2, ClusterEuclidean))
+        Err(e) => test.fail(e.message())
+        Ok(b)  => test.assert(b)
+
+@test
+fn test_the_agglomerative_guards_and_the_three_linkage_names() [io]
+    test.case("a rank-1 array is not a matrix")
+    match clusteragglomerative.build(a_line(), ClusterSingle, ClusterEuclidean)
+        Ok(_)  => test.fail("a rank-1 array is not [n_samples, n_features]")
+        Err(e) => test.assert_eq_str(e.message(), "the data is rank 1, not [n_samples, n_features]")
+
+    test.case("zero rows is its own fault")
+    match clusteragglomerative.build(no_rows(), ClusterSingle, ClusterEuclidean)
+        Ok(_)  => test.fail("an empty matrix has nothing to merge")
+        Err(e) => test.assert_eq_str(e.message(), "the data has no rows to cluster")
+
+    test.case("single and average read back like complete does")
+    match clusteragglomerative.linkage_named("single")
+        None    => test.fail("single is one of the three")
+        Some(l) => test.assert_eq_str(clusteragglomerative.linkage_name(l), "single")
+    match clusteragglomerative.linkage_named("average")
+        None    => test.fail("average is one of the three")
+        Some(l) => test.assert_eq_str(clusteragglomerative.linkage_name(l), "average")
+
+@test
+fn test_the_tree_is_built_under_every_metric() [io]
+    // This method never takes a mean — it only compares distances
+    // between points — so all four metrics are defined for it.
+    test.case("squared euclidean: the last merge is 9 squared")
+    match clusteragglomerative.build(four_points(), ClusterSingle, ClusterSquaredEuclidean)
+        Err(e) => test.fail(e.message())
+        Ok(d)  => test.assert_approx(d.merges[2].distance, 81.0, 0.0000001)
+
+    test.case("manhattan: the last merge is the 9-unit gap itself")
+    match clusteragglomerative.build(four_points(), ClusterSingle, ClusterManhattan)
+        Err(e) => test.fail(e.message())
+        Ok(d)  => test.assert_approx(d.merges[2].distance, 9.0, 0.0000001)
+
+    test.case("chebyshev: the same on a one-dimensional fixture")
+    match clusteragglomerative.build(four_points(), ClusterSingle, ClusterChebyshev)
+        Err(e) => test.fail(e.message())
+        Ok(d)  => test.assert_approx(d.merges[2].distance, 9.0, 0.0000001)
+
+@test
+fn test_a_merge_whose_right_cluster_is_the_lower_root_still_lands() [io]
+    // The replay holds each group under its lowest leaf.  Here the
+    // second merge joins a leaf with the cluster the first one made, so
+    // the right-hand number is the lower root and the cut has to move
+    // the samples the other way.
+    match ndfloat.of_list([0.0, 0.4, 1.0, 5.0], [4, 1])
+        Err(e)   => test.fail(e.message())
+        Ok(data) =>
+            match clusteragglomerative.build(data, ClusterSingle, ClusterEuclidean)
+                Err(e) => test.fail(e.message())
+                Ok(d)  =>
+                    test.case("the first merge is the 0.4 gap")
+                    test.assert_approx(d.merges[0].distance, 0.4, 0.0000001)
+                    test.case("the second joins sample 2 to the cluster holding 0 and 1")
+                    test.assert(d.merges[1].left == 2)
+                    test.assert(d.merges[1].right == 4)
+                    test.case("so a cut at two clusters holds the first three together")
+                    match clusteragglomerative.cut_at_count(d, 2)
+                        Err(e) => test.fail(e.message())
+                        Ok(l)  => test.assert(clusterlabels.labels_of(l) == [0, 0, 0, 1])
+                    test.case("and the last step is one cluster")
+                    match clusteragglomerative.labels_at_step(d, 3)
+                        Err(e) => test.fail(e.message())
+                        Ok(l)  => test.assert(clusterlabels.cluster_count(l) == 1)

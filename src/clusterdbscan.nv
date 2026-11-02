@@ -34,6 +34,10 @@
 // argument, arrived at differently because DBSCAN needs no draws at
 // all.
 
+use clusterfault
+use clusterlabels
+use ndfloat
+
 // The two parameters, and the distance they are measured in.
 //
 // A value rather than three arguments at each call site, for the
@@ -77,7 +81,61 @@ pub struct ClusterDbscanParams
 //     println("${clusterdbscan.params(0.5, 4, ClusterEuclidean).epsilon}")   // 0.5
 // ```
 pub fn params(epsilon: Float, min_points: Int, metric: ClusterMetric) -> ClusterDbscanParams
-    todo("cluster-nv.clusterdbscan.params")
+    ClusterDbscanParams { epsilon: epsilon, min_points: min_points, metric: metric }
+
+// The `[rows, width]` extents of a rank-2 data matrix, or the fault
+// that says why the array is not one.
+fn matrix_extents(data: NdFloat) -> Result<[Int], ClusterFault>
+    let dims = ndfloat.shape(data).dims[:]
+    if list.len(dims) != 2
+        return Err(ClusterNotMatrix(list.len(dims)))
+    if dims[0] == 0
+        return Err(ClusterEmptyData)
+    Ok(dims)
+
+// Parameters that describe no density at all, as a `Result` so that
+// the callers below can refuse them with a `!`.
+//
+// Every query in this module reads the radius, and a radius of zero
+// turns each of their answers into a lie.
+fn checked(p: ClusterDbscanParams) -> Result<Unit, ClusterFault>
+    match check(p)
+        Some(e) => Err(e)
+        None    => Ok(())
+
+// The distance between samples `left` and `right` of a row-major
+// buffer, under one metric.
+//
+// The three sums are accumulated in the one pass over the features and
+// the metric picks between them at the end, because this is the inner
+// loop of every neighbourhood question here.
+fn gap_of(flat: [Float], left: Int, right: Int, width: Int, metric: ClusterMetric) -> Float
+    var squares = 0.0
+    var absolute = 0.0
+    var largest = 0.0
+    for f in 0..width
+        let d = math.abs(flat[left * width + f] - flat[right * width + f])
+        squares = squares + d * d
+        absolute = absolute + d
+        if d > largest
+            largest = d
+    match metric
+        ClusterEuclidean        => math.sqrt(squares)
+        ClusterSquaredEuclidean => squares
+        ClusterManhattan        => absolute
+        ClusterChebyshev        => largest
+
+// The samples within `epsilon` of sample `at`, itself included, in
+// increasing index order.
+//
+// The query `neighbours` answers, over a buffer the caller has already
+// read out of the array so that a fit converts the data once.
+fn nearby(flat: [Float], rows: Int, width: Int, at: Int, p: ClusterDbscanParams) -> [Int]
+    var out: [Int] = []
+    for other in 0..rows
+        if gap_of(flat, at, other, width, p.metric) <= p.epsilon
+            list.push(out, other)
+    out
 
 // Whether these parameters describe a density at all, and which field
 // is wrong if they do not.
@@ -97,7 +155,11 @@ pub fn params(epsilon: Float, min_points: Int, metric: ClusterMetric) -> Cluster
 //         None    => println("usable")
 // ```
 pub fn check(p: ClusterDbscanParams) -> ?ClusterFault
-    todo("cluster-nv.clusterdbscan.check")
+    if not p.epsilon > 0.0
+        return Some(ClusterBadEpsilon(p.epsilon))
+    if p.min_points < 1
+        return Some(ClusterBadMinPoints(p.min_points))
+    None
 
 // Cluster `data` by density.
 //
@@ -122,7 +184,43 @@ pub fn check(p: ClusterDbscanParams) -> ?ClusterFault
 //                 Err(e) => println(e.message())
 // ```
 pub fn fit(data: NdFloat, p: ClusterDbscanParams) -> Result<ClusterLabels, ClusterFault>
-    todo("cluster-nv.clusterdbscan.fit")
+    checked(p)!
+    let dims = matrix_extents(data)!
+    let rows = dims[0]
+    let width = dims[1]
+    let flat = ndfloat.to_list(data)
+    let noise = clusterlabels.noise_label()
+    var visited: [Bool] = list.map(0..rows, i => false)
+    var labels: [Int] = list.map(0..rows, i => noise)
+    var clusters = 0
+    for seed in 0..rows
+        if visited[seed]
+            continue
+        visited[seed] = true
+        var frontier = nearby(flat, rows, width, seed, p)
+        if list.len(frontier) < p.min_points
+            continue
+        labels[seed] = clusters
+        // The cluster grows one ring at a time: the points of a ring
+        // are taken in order, and the neighbours they reach are the
+        // next ring, in the order they were reached.
+        while list.len(frontier) > 0
+            var ring: [Int] = []
+            for at in frontier
+                if not visited[at]
+                    visited[at] = true
+                    let reach = nearby(flat, rows, width, at, p)
+                    if list.len(reach) >= p.min_points
+                        list.append(ring, reach)
+                if labels[at] == noise
+                    labels[at] = clusters
+            frontier = ring
+        clusters = clusters + 1
+    var unassigned = 0
+    for at in labels
+        if at == noise
+            unassigned = unassigned + 1
+    Ok(ClusterLabels { assignment: labels, cluster_count: clusters, noise_count: unassigned })
 
 // The samples within `epsilon` of this one, itself included, in
 // increasing index order.
@@ -145,7 +243,14 @@ pub fn fit(data: NdFloat, p: ClusterDbscanParams) -> Result<ClusterLabels, Clust
 //                 Err(e) => println(e.message())
 // ```
 pub fn neighbours(data: NdFloat, sample: Int, p: ClusterDbscanParams) -> Result<[Int], ClusterFault>
-    todo("cluster-nv.clusterdbscan.neighbours")
+    checked(p)!
+    let dims = matrix_extents(data)!
+    let rows = dims[0]
+    let width = dims[1]
+    if sample < 0 or sample >= rows
+        return Err(ClusterIndexOutOfRange(sample, rows))
+    let flat = ndfloat.to_list(data)
+    Ok(nearby(flat, rows, width, sample, p))
 
 // Whether this sample is a core point: whether at least `min_points`
 // samples lie within `epsilon` of it.
@@ -169,7 +274,8 @@ pub fn neighbours(data: NdFloat, sample: Int, p: ClusterDbscanParams) -> Result<
 // ```
 pub fn is_core_point(data: NdFloat, sample: Int,
                      p: ClusterDbscanParams) -> Result<Bool, ClusterFault>
-    todo("cluster-nv.clusterdbscan.is_core_point")
+    let near = neighbours(data, sample, p)!
+    Ok(list.len(near) >= p.min_points)
 
 // The distance from every sample to its `k`th nearest neighbour,
 // sorted from largest to smallest.
@@ -195,4 +301,20 @@ pub fn is_core_point(data: NdFloat, sample: Int,
 //                 Err(e) => println(e.message())
 // ```
 pub fn k_distances(data: NdFloat, k: Int, metric: ClusterMetric) -> Result<[Float], ClusterFault>
-    todo("cluster-nv.clusterdbscan.k_distances")
+    let dims = matrix_extents(data)!
+    let rows = dims[0]
+    let width = dims[1]
+    if k < 1 or k >= rows
+        return Err(ClusterBadK(k, rows))
+    let flat = ndfloat.to_list(data)
+    var out: [Float] = []
+    for at in 0..rows
+        var others: [Float] = []
+        for other in 0..rows
+            if other != at
+                list.push(others, gap_of(flat, at, other, width, metric))
+        list.sort(others)
+        list.push(out, others[k - 1])
+    list.sort(out)
+    list.reverse(out)
+    Ok(out)

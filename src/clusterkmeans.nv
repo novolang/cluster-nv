@@ -43,6 +43,10 @@
 // and quietly ignoring it, which is what a library that takes one and
 // then computes means is doing.
 
+use clusterfault
+use clusterlabels
+use ndfloat
+
 // A fitted k-means model: the labels, where the centroids ended, what
 // the inertia is, and how the iteration ended.
 //
@@ -96,7 +100,138 @@ pub struct ClusterKmeansModel
 //     println("${clusterkmeans.uniforms_needed(3)}")   // 3
 // ```
 pub fn uniforms_needed(k: Int) -> Int
-    todo("cluster-nv.clusterkmeans.uniforms_needed")
+    k
+
+// The `[rows, width]` extents of a rank-2 data matrix, or the fault
+// that says why the array is not one.
+//
+// A rank-1 array of measurements has to be reshaped by the caller,
+// because only the caller knows whether it is one feature of many
+// samples or many features of one.
+fn matrix_extents(data: NdFloat) -> Result<[Int], ClusterFault>
+    let dims = ndfloat.shape(data).dims[:]
+    if list.len(dims) != 2
+        return Err(ClusterNotMatrix(list.len(dims)))
+    if dims[0] == 0
+        return Err(ClusterEmptyData)
+    Ok(dims)
+
+// The squared distance from sample `row` to centroid `c`, both read out
+// of row-major buffers `width` features wide.
+//
+// Squared, and never square-rooted, because every question this module
+// asks is a nearest-point question and the two orders agree.
+fn sq_to_centroid(flat: [Float], row: Int, cents: [Float], c: Int, width: Int) -> Float
+    var total = 0.0
+    for f in 0..width
+        let d = flat[row * width + f] - cents[c * width + f]
+        total = total + d * d
+    total
+
+// The index of the centroid nearest sample `row`.
+//
+// A sample exactly between two centroids goes to the lower-numbered
+// one, which is what makes a fit reproducible when the data is
+// symmetric.
+fn nearest_one(flat: [Float], row: Int, cents: [Float], k: Int, width: Int) -> Int
+    var best = 0
+    var best_d = sq_to_centroid(flat, row, cents, 0, width)
+    for c in 1..k
+        let d = sq_to_centroid(flat, row, cents, c, width)
+        if d < best_d
+            best = c
+            best_d = d
+    best
+
+// Which cluster every sample is nearest to, in row order.
+fn nearest_all(flat: [Float], rows: Int, width: Int, cents: [Float], k: Int) -> [Int]
+    var out: [Int] = []
+    for row in 0..rows
+        list.push(out, nearest_one(flat, row, cents, k, width))
+    out
+
+// Every sample's squared distance to the nearest of `k` centroids.
+//
+// This is k-means++'s sampling weight: the next centroid is drawn with
+// a probability proportional to it.
+fn nearest_sq(flat: [Float], rows: Int, width: Int, cents: [Float], k: Int) -> [Float]
+    var out: [Float] = []
+    for row in 0..rows
+        let at = nearest_one(flat, row, cents, k, width)
+        list.push(out, sq_to_centroid(flat, row, cents, at, width))
+    out
+
+// The sample a uniform draw picks from `rows` samples, uniformly.
+//
+// A draw just below 1.0 can still reach `rows` once the multiplication
+// rounds, and the last sample is where it belongs.
+fn picked_row(u: Float, rows: Int) -> Int
+    let at = float.to_int(u * int.to_float(rows))
+    if at >= rows
+        // cov: skip — unreachable: a draw below 1.0 never rounds up to rows
+        rows - 1
+    else
+        at
+
+// Copy sample `row`'s features onto the end of `out`.
+fn append_row(var out: [Float], flat: [Float], row: Int, width: Int)
+    for f in 0..width
+        list.push(out, flat[row * width + f])
+
+// The mean of each cluster's rows, in cluster order and row-major.
+//
+// A cluster with no members has no mean of its own, so its row is
+// copied from `fallback` instead.  The row of zeros it would otherwise
+// get is a point that attracts the next assignment.
+//
+// A sample carrying the noise label belongs to no cluster and
+// contributes to none.
+fn cluster_means(flat: [Float], rows: Int, width: Int, assignment: [Int], clusters: Int,
+                 fallback: [Float]) -> [Float]
+    var out: [Float] = list.map(0..clusters * width, i => 0.0)
+    var counts: [Int] = list.zeros(clusters)
+    for row in 0..rows
+        let c = assignment[row]
+        if c >= 0 and c < clusters
+            counts[c] = counts[c] + 1
+            for f in 0..width
+                out[c * width + f] = out[c * width + f] + flat[row * width + f]
+    for c in 0..clusters
+        if counts[c] == 0
+            for f in 0..width
+                out[c * width + f] = fallback[c * width + f]
+        else
+            for f in 0..width
+                out[c * width + f] = out[c * width + f] / int.to_float(counts[c])
+    out
+
+// The furthest any centroid moved between two passes.
+//
+// The comparison is against the Euclidean distance, because a
+// tolerance is a distance a caller can picture, and a squared one
+// would be the square of it.
+fn worst_move(before: [Float], after: [Float], clusters: Int, width: Int) -> Float
+    var worst = 0.0
+    for c in 0..clusters
+        var total = 0.0
+        for f in 0..width
+            let d = after[c * width + f] - before[c * width + f]
+            total = total + d * d
+        let moved = math.sqrt(total)
+        if moved > worst
+            worst = moved
+    worst
+
+// The squared distance from one plain point to centroid `c`.
+//
+// `predict` is the caller: a point that arrived on its own is a list,
+// not a row of a matrix, and never becomes one.
+fn squared_to_point(cents: [Float], c: Int, width: Int, point: [Float]) -> Float
+    var total = 0.0
+    for f in 0..width
+        let d = cents[c * width + f] - point[f]
+        total = total + d * d
+    total
 
 // `k` starting centroids chosen from the data by k-means++, using the
 // uniform draws the caller supplies.
@@ -124,7 +259,40 @@ pub fn uniforms_needed(k: Int) -> Int
 //                 Err(e) => println(e.message())
 // ```
 pub fn seed_plus_plus(data: NdFloat, k: Int, uniforms: [Float]) -> Result<NdFloat, ClusterFault>
-    todo("cluster-nv.clusterkmeans.seed_plus_plus")
+    let dims = matrix_extents(data)!
+    let rows = dims[0]
+    let width = dims[1]
+    if k < 1 or k > rows
+        return Err(ClusterBadK(k, rows))
+    let needed = uniforms_needed(k)
+    if list.len(uniforms) != needed
+        return Err(ClusterUniformCountWrong(list.len(uniforms), needed))
+    for i in 0..list.len(uniforms)
+        let u = uniforms[i]
+        if u < 0.0 or u >= 1.0
+            return Err(ClusterUniformOutOfRange(i, u))
+    let flat = ndfloat.to_list(data)
+    var chosen: [Float] = []
+    append_row(var chosen, flat, picked_row(uniforms[0], rows), width)
+    var count = 1
+    while count < k
+        let weights = nearest_sq(flat, rows, width, chosen, count)
+        let total = list.sum_float(weights)
+        let target = uniforms[count] * total
+        var pick = rows - 1
+        if total > 0.0
+            var running = 0.0
+            for j in 0..rows
+                running = running + weights[j]
+                if running >= target
+                    pick = j
+                    break
+        append_row(var chosen, flat, pick, width)
+        count = count + 1
+    match ndfloat.of_list(chosen, [k, width])
+        // cov: skip — unreachable: chosen holds exactly k rows of width
+        Err(e) => Err(ClusterArrayFault(e))
+        Ok(c)  => Ok(c)
 
 // Fit k-means to `data` from these starting centroids.
 //
@@ -157,7 +325,48 @@ pub fn seed_plus_plus(data: NdFloat, k: Int, uniforms: [Float]) -> Result<NdFloa
 // ```
 pub fn fit(data: NdFloat, centroids: NdFloat, max_iterations: Int,
            tolerance: Float) -> Result<ClusterKmeansModel, ClusterFault>
-    todo("cluster-nv.clusterkmeans.fit")
+    let dims = matrix_extents(data)!
+    let rows = dims[0]
+    let width = dims[1]
+    let start = ndfloat.shape(centroids).dims[:]
+    if list.len(start) != 2
+        return Err(ClusterNotMatrix(list.len(start)))
+    let k = start[0]
+    if k < 1
+        return Err(ClusterBadK(k, rows))
+    if start[1] != width
+        return Err(ClusterCentroidShapeWrong(k, width, k, start[1]))
+    if max_iterations < 1
+        return Err(ClusterBadBudget(max_iterations))
+    let flat = ndfloat.to_list(data)
+    var current = ndfloat.to_list(centroids)
+    var assignment: [Int] = []
+    var iterations = 0
+    var status = ClusterBudgetExhausted
+    while iterations < max_iterations
+        var nearest = nearest_all(flat, rows, width, current, k)
+        var moved = cluster_means(flat, rows, width, nearest, k, current)
+        let step = worst_move(current, moved, k, width)
+        current = moved
+        assignment = nearest
+        iterations = iterations + 1
+        let here = ClusterLabels { assignment: nearest, cluster_count: k, noise_count: 0 }
+        if list.contains(clusterlabels.sizes(here), 0)
+            status = ClusterDegenerate("an empty cluster after an assignment")
+            break
+        if step <= tolerance
+            status = ClusterConverged
+            break
+    let labels = ClusterLabels { assignment: assignment, cluster_count: k, noise_count: 0 }
+    match ndfloat.of_list(current, [k, width])
+        // cov: skip — unreachable: current holds exactly k rows of width
+        Err(e)   => Err(ClusterArrayFault(e))
+        Ok(cent) =>
+            match inertia(data, cent, labels)
+                // cov: skip — not reached: fit checked every shape first
+                Err(e) => Err(e)
+                Ok(v)  => Ok(ClusterKmeansModel { labels: labels, centroids: cent, inertia: v,
+                                                  status: status, iterations: iterations })
 
 // `seed_plus_plus` followed by `fit`, in one call.
 //
@@ -180,7 +389,8 @@ pub fn fit(data: NdFloat, centroids: NdFloat, max_iterations: Int,
 // ```
 pub fn fit_seeded(data: NdFloat, k: Int, uniforms: [Float], max_iterations: Int,
                   tolerance: Float) -> Result<ClusterKmeansModel, ClusterFault>
-    todo("cluster-nv.clusterkmeans.fit_seeded")
+    let centroids = seed_plus_plus(data, k, uniforms)!
+    fit(data, centroids, max_iterations, tolerance)
 
 // Assign every sample to its nearest centroid, with no iteration.
 //
@@ -207,7 +417,21 @@ pub fn fit_seeded(data: NdFloat, k: Int, uniforms: [Float], max_iterations: Int,
 //                         Err(e) => println(e.message())
 // ```
 pub fn assign(data: NdFloat, centroids: NdFloat) -> Result<ClusterLabels, ClusterFault>
-    todo("cluster-nv.clusterkmeans.assign")
+    let dims = matrix_extents(data)!
+    let rows = dims[0]
+    let width = dims[1]
+    let cent = ndfloat.shape(centroids).dims[:]
+    if list.len(cent) != 2
+        return Err(ClusterNotMatrix(list.len(cent)))
+    let k = cent[0]
+    if k < 1
+        return Err(ClusterBadK(k, rows))
+    if cent[1] != width
+        return Err(ClusterCentroidShapeWrong(k, width, k, cent[1]))
+    let flat = ndfloat.to_list(data)
+    let cents = ndfloat.to_list(centroids)
+    let assignment = nearest_all(flat, rows, width, cents, k)
+    Ok(ClusterLabels { assignment: assignment, cluster_count: k, noise_count: 0 })
 
 // The inertia of an assignment: the sum over every sample of the
 // squared distance to the centroid it was assigned to.
@@ -237,7 +461,30 @@ pub fn assign(data: NdFloat, centroids: NdFloat) -> Result<ClusterLabels, Cluste
 // ```
 pub fn inertia(data: NdFloat, centroids: NdFloat,
                labels: ClusterLabels) -> Result<Float, ClusterFault>
-    todo("cluster-nv.clusterkmeans.inertia")
+    let dims = matrix_extents(data)!
+    let rows = dims[0]
+    let width = dims[1]
+    let cent = ndfloat.shape(centroids).dims[:]
+    if list.len(cent) != 2
+        return Err(ClusterNotMatrix(list.len(cent)))
+    let k = cent[0]
+    if k < 1
+        return Err(ClusterBadK(k, rows))
+    if cent[1] != width
+        return Err(ClusterCentroidShapeWrong(k, width, k, cent[1]))
+    let assignment = labels.assignment
+    if list.len(assignment) != rows
+        return Err(ClusterBadCut("a labelling of ${list.len(assignment)} label(s) over ${rows} sample(s)"))
+    let flat = ndfloat.to_list(data)
+    let cents = ndfloat.to_list(centroids)
+    var total = 0.0
+    for row in 0..rows
+        let c = assignment[row]
+        if c != clusterlabels.noise_label()
+            if c < 0 or c >= k
+                return Err(ClusterIndexOutOfRange(c, k))
+            total = total + sq_to_centroid(flat, row, cents, c, width)
+    Ok(total)
 
 // The cluster one point belongs to, against these centroids.
 //
@@ -259,7 +506,24 @@ pub fn inertia(data: NdFloat, centroids: NdFloat,
 //                 Err(e) => println(e.message())
 // ```
 pub fn predict(centroids: NdFloat, point: [Float]) -> Result<Int, ClusterFault>
-    todo("cluster-nv.clusterkmeans.predict")
+    let cent = ndfloat.shape(centroids).dims[:]
+    if list.len(cent) != 2
+        return Err(ClusterNotMatrix(list.len(cent)))
+    let k = cent[0]
+    let width = cent[1]
+    if k < 1
+        return Err(ClusterBadK(k, list.len(point)))
+    if list.len(point) != width
+        return Err(ClusterCentroidShapeWrong(1, width, 1, list.len(point)))
+    let cents = ndfloat.to_list(centroids)
+    var best = 0
+    var best_d = squared_to_point(cents, 0, width, point)
+    for c in 1..k
+        let d = squared_to_point(cents, c, width, point)
+        if d < best_d
+            best = c
+            best_d = d
+    Ok(best)
 
 // The centroids of an assignment: the mean of the samples in each
 // cluster.
@@ -286,4 +550,28 @@ pub fn predict(centroids: NdFloat, point: [Float]) -> Result<Int, ClusterFault>
 //                 Err(e) => println(e.message())
 // ```
 pub fn centroids_of(data: NdFloat, labels: ClusterLabels) -> Result<NdFloat, ClusterFault>
-    todo("cluster-nv.clusterkmeans.centroids_of")
+    let dims = matrix_extents(data)!
+    let rows = dims[0]
+    let width = dims[1]
+    let assignment = labels.assignment
+    let clusters = labels.cluster_count
+    if list.len(assignment) != rows
+        return Err(ClusterBadCut("a labelling of ${list.len(assignment)} label(s) over ${rows} sample(s)"))
+    if clusters < 1
+        return Err(ClusterBadK(clusters, rows))
+    for row in 0..rows
+        let c = assignment[row]
+        if c != clusterlabels.noise_label() and (c < 0 or c >= clusters)
+            return Err(ClusterIndexOutOfRange(c, clusters))
+    let sizes = clusterlabels.sizes(labels)
+    for c in 0..clusters
+        if sizes[c] == 0
+            return Err(ClusterBadCut("a labelling with an empty cluster"))
+    let flat = ndfloat.to_list(data)
+    // No cluster is empty, so this fallback is never read.
+    let unused: [Float] = list.map(0..clusters * width, i => 0.0)
+    let means = cluster_means(flat, rows, width, assignment, clusters, unused)
+    match ndfloat.of_list(means, [clusters, width])
+        // cov: skip — unreachable: one mean per cluster, each a row of width
+        Err(e) => Err(ClusterArrayFault(e))
+        Ok(m)  => Ok(m)

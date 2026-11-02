@@ -9,14 +9,6 @@ and [linfa-clustering](https://docs.rs/linfa-clustering/) are built
 around. The data is an [ndarray-nv](https://novo-lang.org/packages/ndarray-nv)
 matrix.
 
-**Status: NOT IMPLEMENTED — interface only.** Every function is
-declared with its full signature, but every body is a `todo()` that
-panics when called. The package is published so its design can be
-reviewed and depended on before it is implemented. Version 0.1.0 will
-be the first working release. `ndarray-nv` 0.0.1, which this package
-is built on, is an interface too, so nothing here can be implemented
-before it is.
-
 ## What it is
 
 The input is a **matrix** of `n_samples` rows and `n_features`
@@ -91,10 +83,10 @@ fn main() [io]
                     println("inertia ${model.inertia}")                   // 1
 ```
 
-Build and test with `novo pkg build` and `novo test`. Today `novo test`
-fails on purpose: every test reaches a
-`not implemented: cluster-nv.<module>.<fn>` panic. The tests are the
-specification the implementation will have to satisfy.
+Build and test with `novo pkg build` and `novo test`. The tests are
+the specification: their fixtures are small enough to work out by
+hand, and every number they assert is arithmetic rather than a value
+copied from a run.
 
 ## What the package contains
 
@@ -212,27 +204,33 @@ on any labelling, wherever it came from.
 
 ## Tests
 
-The suite is written against the signatures and is red by
-construction: every assertion reaches a `todo()`. Its fixtures are
-small enough to work out by hand and are chosen so that every asserted
-number is arithmetic rather than a value copied from a run. Four
-points on a line — 0, 1, 10, 11 — are two well-separated pairs whose
-k-means fit has centroids at 0.5 and 10.5 and an inertia of 1, and
-whose dendrogram's last merge is at 9, 10 or 11 depending on the
-linkage. Five points — three tight, two apart, one far away — give
-DBSCAN two clusters and exactly one noise point. The seeding draws are
-written into the tests, which is what taking them as an argument buys:
-there is no generator to fake and no global to reset.
+The fixtures are small enough to work out by hand and are chosen so
+that every asserted number is arithmetic rather than a value copied
+from a run. Four points on a line — 0, 1, 10, 11 — are two
+well-separated pairs whose k-means fit has centroids at 0.5 and 10.5
+and an inertia of 1, and whose dendrogram's last merge is at 9, 10 or
+11 depending on the linkage. Five points on a line — 0, 0.1 and 0.2
+close together, 10 on its own, 50 far away — are one DBSCAN cluster
+and two noise points. The seeding draws are written into the tests,
+which is what taking them as an argument buys: there is no generator
+to fake and no global to reset.
 
-## Implementation status
+`tests/cluster_edge_tests.nv` is the second layer: the shape guards
+every entry point opens with, the arguments that are refused, the
+metrics and the queries the small fixtures never reach, and one merge
+history where the cluster on the right of a union holds the lower
+root. `bash tests/coverage.sh` runs all six suites and prints the
+union of their line coverage over `src/`; every instrumented line
+either ran or carries a `// cov: skip` marker saying why it cannot.
 
-| Module | Declared | Implemented |
-| --- | --- | --- |
-| `clusterfault` | 13 variants, `message` | no |
-| `clusterlabels` | 13 functions | no |
-| `clusterkmeans` | 8 functions | no |
-| `clusterdbscan` | 6 functions | no |
-| `clusteragglomerative` | 7 functions | no |
+One suite is not green. `tests/clusterdbscan_tests.nv` asserts two
+clusters over a fixture that has one, and a nearest-neighbour distance
+of 39.9 where the fixture gives 40.0: its header describes a sixth
+point, 10.1, that its `of_list` call does not carry, and no fixture
+satisfies both of those assertions and the one saying 10.0 is not a
+core point. Both failures, and every line excused from coverage and
+why, are recorded in the CHANGELOG's `### Known`. The other five
+suites pass, with no leak line.
 
 ## Licence
 

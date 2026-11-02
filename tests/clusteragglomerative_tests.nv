@@ -1,9 +1,6 @@
 // clusteragglomerative_tests.nv — the tree is built once and cut many
 // times.
 //
-// RED ON PURPOSE: every assertion reaches `not implemented:
-// cluster-nv.clusteragglomerative.<fn>`.
-//
 // The fixture is the same four points on a line — 0, 1, 10, 11 — and
 // its whole merge history can be written down.  Under average linkage
 // the first two merges are {0,1} at distance 1 and {2,3} at distance

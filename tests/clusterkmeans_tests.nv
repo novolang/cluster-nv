@@ -1,9 +1,6 @@
 // clusterkmeans_tests.nv — k-means, and the draws that arrive from
 // outside.
 //
-// RED ON PURPOSE: every assertion reaches `not implemented:
-// cluster-nv.clusterkmeans.<fn>`.
-//
 // The fixture is four points on a line — 0, 1, 10, 11 — which is two
 // well-separated pairs and the smallest data set on which every claim
 // k-means makes can be checked by hand.  Its two-cluster fit has

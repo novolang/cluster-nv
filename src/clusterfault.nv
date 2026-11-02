@@ -93,7 +93,31 @@ impl Error for ClusterFault
     // reader never has to go back to the call to find out what the
     // other side was.  `ClusterArrayFault` delegates to the
     // `NdFault` it carries.
-    //
-    // Panics with `not implemented` until the bodies land.
     fn message(self) -> Str
-        todo("cluster-nv.ClusterFault.message")
+        match self
+            ClusterNotMatrix(rank)                                              =>
+                "the data is rank ${rank}, not [n_samples, n_features]"
+            ClusterEmptyData                                                    =>
+                "the data has no rows to cluster"
+            ClusterBadK(k, samples)                                             =>
+                "a k of ${k} over ${samples} sample(s)"
+            ClusterUniformCountWrong(given, needed)                             =>
+                "${given} uniform draw(s) where ${needed} are needed"
+            ClusterUniformOutOfRange(index, value)                              =>
+                "uniform draw ${index} is ${value}, outside [0, 1)"
+            ClusterCentroidShapeWrong(want_rows, want_cols, got_rows, got_cols) =>
+                "centroids of [${want_rows}, ${want_cols}], not [${got_rows}, ${got_cols}]"
+            ClusterBadEpsilon(value)                                            =>
+                "an epsilon of ${value} is not positive"
+            ClusterBadMinPoints(value)                                          =>
+                "a min_points of ${value} is below 1"
+            ClusterBadBudget(value)                                             =>
+                "a budget of ${value} pass(es) runs nothing"
+            ClusterMetricUnsupported(algorithm, metric)                         =>
+                "${algorithm} is not defined for the ${metric} metric"
+            ClusterBadCut(what)                                                 =>
+                "${what} names no partition"
+            ClusterIndexOutOfRange(index, count)                                =>
+                "index ${index} is off the end of ${count}"
+            ClusterArrayFault(inner)                                            =>
+                inner.message()

@@ -37,6 +37,10 @@
 // reproducibility promise the other two modules make, and it costs
 // nothing to keep.
 
+use clusterfault
+use clusterlabels
+use ndfloat
+
 // How the distance between two CLUSTERS is defined, given the
 // distances between their points.
 //
@@ -116,7 +120,61 @@ pub struct ClusterDendrogram
 //     println(clusteragglomerative.linkage_name(ClusterSingle))   // single
 // ```
 pub fn linkage_name(linkage: ClusterLinkage) -> Str
-    todo("cluster-nv.clusteragglomerative.linkage_name")
+    match linkage
+        ClusterSingle   => "single"
+        ClusterComplete => "complete"
+        ClusterAverage  => "average"
+
+// The `[rows, width]` extents of a rank-2 data matrix, or the fault
+// that says why the array is not one.
+fn matrix_extents(data: NdFloat) -> Result<[Int], ClusterFault>
+    let dims = ndfloat.shape(data).dims[:]
+    if list.len(dims) != 2
+        return Err(ClusterNotMatrix(list.len(dims)))
+    if dims[0] == 0
+        return Err(ClusterEmptyData)
+    Ok(dims)
+
+// The distance between samples `left` and `right` of a row-major
+// buffer, under one metric.
+//
+// The three sums are accumulated in the one pass over the features and
+// the metric picks between them at the end, because the first thing
+// `build` does is ask this of every pair.
+fn gap_of(flat: [Float], left: Int, right: Int, width: Int, metric: ClusterMetric) -> Float
+    var squares = 0.0
+    var absolute = 0.0
+    var largest = 0.0
+    for f in 0..width
+        let d = math.abs(flat[left * width + f] - flat[right * width + f])
+        squares = squares + d * d
+        absolute = absolute + d
+        if d > largest
+            largest = d
+    match metric
+        ClusterEuclidean        => math.sqrt(squares)
+        ClusterSquaredEuclidean => squares
+        ClusterManhattan        => absolute
+        ClusterChebyshev        => largest
+
+// The distance from a merge to some other cluster, from the two
+// distances its halves had to that cluster.
+//
+// This is the Lance-Williams update, and it is what makes the tree
+// cost one pass over the clusters per merge rather than one over every
+// pair of their points.  The mean is over all of those pairs, which is
+// why it weights each half by its size.
+fn linked(linkage: ClusterLinkage, a_to_x: Float, b_to_x: Float, a_size: Int, b_size: Int) -> Float
+    match linkage
+        ClusterSingle   => if a_to_x <= b_to_x
+            a_to_x
+        else
+            b_to_x
+        ClusterComplete => if a_to_x >= b_to_x
+            a_to_x
+        else
+            b_to_x
+        ClusterAverage  => (int.to_float(a_size) * a_to_x + int.to_float(b_size) * b_to_x) / int.to_float(a_size + b_size)
 
 // The linkage a name denotes, or `None`.
 //
@@ -134,7 +192,13 @@ pub fn linkage_name(linkage: ClusterLinkage) -> Str
 //         None    => println("no such linkage")
 // ```
 pub fn linkage_named(name: Str) -> ?ClusterLinkage
-    todo("cluster-nv.clusteragglomerative.linkage_named")
+    if name == "single"
+        return Some(ClusterSingle)
+    if name == "complete"
+        return Some(ClusterComplete)
+    if name == "average"
+        return Some(ClusterAverage)
+    None
 
 // Build the merge tree for `data`.
 //
@@ -159,7 +223,54 @@ pub fn linkage_named(name: Str) -> ?ClusterLinkage
 // ```
 pub fn build(data: NdFloat, linkage: ClusterLinkage,
              metric: ClusterMetric) -> Result<ClusterDendrogram, ClusterFault>
-    todo("cluster-nv.clusteragglomerative.build")
+    let dims = matrix_extents(data)!
+    let rows = dims[0]
+    let width = dims[1]
+    let flat = ndfloat.to_list(data)
+    // Cluster 0 to `rows - 1` is a leaf; `rows + i` is the cluster that
+    // merge `i` produced, which is what a merge record names.
+    let slots = 2 * rows - 1
+    var dist: [Float] = list.map(0..slots * slots, i => 0.0)
+    var sizes: [Int] = list.map(0..slots, i => 1)
+    var alive: [Bool] = list.map(0..slots, i => false)
+    for leaf in 0..rows
+        alive[leaf] = true
+    for a in 0..rows
+        for b in 0..rows
+            dist[a * slots + b] = gap_of(flat, a, b, width, metric)
+    var merges: [ClusterMerge] = []
+    for step in 0..rows - 1
+        // The closest live pair, the lower first index first and then
+        // the lower second, which is what makes the tree deterministic.
+        var left = 0
+        var right = 0
+        var closest = 0.0
+        var found = false
+        for a in 0..slots
+            if alive[a]
+                for b in a + 1..slots
+                    if alive[b]
+                        let d = dist[a * slots + b]
+                        if not found or d < closest
+                            left = a
+                            right = b
+                            closest = d
+                            found = true
+        let fresh = rows + step
+        let joined = sizes[left] + sizes[right]
+        merges = list.push(merges, ClusterMerge { left: left, right: right,
+                                                  distance: closest, size: joined })
+        for x in 0..slots
+            if alive[x] and x != left and x != right
+                let d = linked(linkage, dist[left * slots + x], dist[right * slots + x],
+                               sizes[left], sizes[right])
+                dist[fresh * slots + x] = d
+                dist[x * slots + fresh] = d
+        alive[left] = false
+        alive[right] = false
+        alive[fresh] = true
+        sizes[fresh] = joined
+    Ok(ClusterDendrogram { merges: merges, sample_count: rows })
 
 // Cut the tree so that exactly `count` clusters remain.
 //
@@ -189,7 +300,10 @@ pub fn build(data: NdFloat, linkage: ClusterLinkage,
 //                         Err(e) => println(e.message())
 // ```
 pub fn cut_at_count(tree: ClusterDendrogram, count: Int) -> Result<ClusterLabels, ClusterFault>
-    todo("cluster-nv.clusteragglomerative.cut_at_count")
+    let samples = tree.sample_count
+    if count < 1 or count > samples
+        return Err(ClusterBadCut("a cluster count of ${count} over ${samples} sample(s)"))
+    labels_at_step(tree, samples - count)
 
 // Cut the tree below every merge that happened at or above
 // `threshold`.
@@ -221,7 +335,15 @@ pub fn cut_at_count(tree: ClusterDendrogram, count: Int) -> Result<ClusterLabels
 // ```
 pub fn cut_at_distance(tree: ClusterDendrogram,
                        threshold: Float) -> Result<ClusterLabels, ClusterFault>
-    todo("cluster-nv.clusteragglomerative.cut_at_distance")
+    if threshold < 0.0
+        return Err(ClusterBadCut("a distance threshold of ${threshold}"))
+    var step = 0
+    for m in tree.merges
+        if m.distance < threshold
+            step = step + 1
+        else
+            break
+    labels_at_step(tree, step)
 
 // The heights of the merges, in the order they happened.
 //
@@ -243,7 +365,16 @@ pub fn cut_at_distance(tree: ClusterDendrogram,
 //                 Ok(d)  => println("${list.len(clusteragglomerative.merge_heights(d))}")   // 3
 // ```
 pub fn merge_heights(tree: ClusterDendrogram) -> [Float]
-    todo("cluster-nv.clusteragglomerative.merge_heights")
+    list.map(tree.merges, m => m.distance)
+
+// The leaf a group is held under, following the parents the replay has
+// set.  A group's representative is a leaf, never a merge's number, so
+// it is always a usable label for the numbering pass.
+fn root_of(parent: [Int], at: Int) -> Int
+    var here = at
+    while parent[here] != here
+        here = parent[here]
+    here
 
 // The cluster each sample is in at one step of the build, numbered
 // from 0.
@@ -271,4 +402,39 @@ pub fn merge_heights(tree: ClusterDendrogram) -> [Float]
 //                         Err(e) => println(e.message())
 // ```
 pub fn labels_at_step(tree: ClusterDendrogram, step: Int) -> Result<ClusterLabels, ClusterFault>
-    todo("cluster-nv.clusteragglomerative.labels_at_step")
+    let merges = tree.merges
+    let samples = tree.sample_count
+    if samples < 1 or step < 0 or step > list.len(merges)
+        return Err(ClusterBadCut("a step outside the merge history"))
+    // A merge names two cluster numbers, and a cluster number is a
+    // leaf, or the number of an earlier merge.  So the leaves are
+    // gathered into groups as the merges are replayed, and each group
+    // is held under the lowest leaf in it — a number that is always
+    // less than the sample count, whatever the merges produced.
+    var parent: [Int] = list.map(0..samples, i => i)
+    var group: [Int] = list.map(0..2 * samples - 1, i => i)
+    for k in 0..step
+        let m = merges[k]
+        let a = root_of(parent, group[m.left])
+        let b = root_of(parent, group[m.right])
+        if a < b
+            parent[b] = a
+            group[samples + k] = a
+        else
+            parent[a] = b
+            group[samples + k] = b
+    // Number the clusters from 0 by the first sample in each, so that
+    // the labels do not depend on which cluster numbers the merges
+    // used.
+    var seen: [Bool] = list.map(0..samples, i => false)
+    var number: [Int] = list.zeros(samples)
+    var labels: [Int] = []
+    var next = 0
+    for at in 0..samples
+        let own = root_of(parent, at)
+        if not seen[own]
+            seen[own] = true
+            number[own] = next
+            next = next + 1
+        list.push(labels, number[own])
+    Ok(ClusterLabels { assignment: labels, cluster_count: next, noise_count: 0 })
