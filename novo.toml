@@ -23,7 +23,7 @@ category    = "science"
 tags        = ["clustering", "kmeans", "dbscan", "agglomerative", "unsupervised", "machine-learning", "science"]
 repository  = "https://github.com/novolang/cluster-nv"
 maintainers = ["novo-lang"]
-novo        = ">= 0.20.2"
+novo        = ">= 0.23.0"
 
 # A library: no `main`, so `novo pkg build` type-checks and
 # effect-checks every module under `src/` and writes no binary.
